@@ -1,0 +1,167 @@
+/* Atmosphera — Dark Theme Floating GM Panel */
+
+.atmosphera-panel {
+  background: #1a1a2e !important;
+  border: 1px solid #16213e !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6) !important;
+  font-family: "Signika", sans-serif;
+}
+
+.atmosphera-panel .window-header {
+  background: linear-gradient(135deg, #0f3460, #533483) !important;
+  border-bottom: 1px solid #533483;
+  border-radius: 8px 8px 0 0;
+}
+
+.atmosphera-panel .window-header .window-title {
+  color: #e0e0e0;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.atmosphera-panel .window-content {
+  padding: 0 !important;
+  background: #1a1a2e !important;
+  color: #c8c8d4;
+}
+
+.atmosphera-controls {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.atmo-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.atmo-section label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8888aa;
+}
+
+.atmo-section select,
+.atmo-section input[type="text"] {
+  background: #0f0f23;
+  border: 1px solid #333355;
+  border-radius: 4px;
+  color: #e0e0e0;
+  padding: 6px 8px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.atmo-section select:focus,
+.atmo-section input[type="text"]:focus {
+  border-color: #533483;
+}
+
+.atmo-section select option {
+  background: #0f0f23;
+  color: #e0e0e0;
+}
+
+.atmo-buttons {
+  flex-direction: row !important;
+  gap: 8px;
+}
+
+.atmo-buttons button {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #333355;
+  border-radius: 4px;
+  background: #0f0f23;
+  color: #c8c8d4;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.atmo-buttons button:hover {
+  background: #1e1e3a;
+  border-color: #533483;
+}
+
+.atmo-buttons button.active {
+  background: linear-gradient(135deg, #0f3460, #533483);
+  border-color: #7b5ea7;
+  color: #fff;
+}
+
+.atmo-buttons button i {
+  font-size: 12px;
+}
+
+#atmo-stop:hover {
+  background: #3a1010;
+  border-color: #a03030;
+}
+
+/* Volume Slider */
+.atmo-section input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #0f0f23;
+  outline: none;
+  border: 1px solid #333355;
+}
+
+.atmo-section input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #533483, #7b5ea7);
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+  box-shadow: 0 0 6px rgba(83, 52, 131, 0.5);
+}
+
+.atmo-section input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #533483, #7b5ea7);
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+  box-shadow: 0 0 6px rgba(83, 52, 131, 0.5);
+}
+
+/* Status Section */
+.atmo-status {
+  background: #0f0f23;
+  border: 1px solid #333355;
+  border-radius: 4px;
+  padding: 8px 10px !important;
+  flex-direction: row !important;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+#atmo-gen-status {
+  color: #7b5ea7;
+  font-weight: 500;
+}
+
+#atmo-credits {
+  color: #668866;
+  font-weight: 500;
+}
