@@ -1,25 +1,33 @@
 # 🎵 Atmosphera
 
-**Dynamic AI-generated music that reacts to your FoundryVTT game.**
-
-Atmosphera uses the [Suno AI](https://suno.com) music generation API to create contextual background music that responds to what's happening in your game — combat, exploration, tense moments, and more.
+**AI-powered dynamic atmosphere music for FoundryVTT** — uses [Suno AI](https://suno.com) to generate contextual background music based on your game state.
 
 ## Features
 
-- **Combat Detection** — Automatically generates battle music when initiative is rolled, with tags based on creature types (undead → gothic organ, dragon → epic brass, fey → whimsical harp)
-- **HP Monitoring** — Switches to tense/urgent music when player characters drop below a configurable HP threshold
-- **Scene Atmosphere** — Set per-scene atmosphere (tavern, dungeon, wilderness, temple, etc.) for ambient music
-- **Smart Caching** — Generated tracks are cached locally so you never pay to generate the same vibe twice
-- **Smooth Crossfades** — A/B deck pattern ensures seamless transitions between musical states
-- **GM Control Panel** — Floating UI to manually set atmosphere, override mood, monitor generation status, and check remaining credits
-- **Macro/API Access** — Full API exposed for macro integration
+- **Auto-detect combat** — switches to battle music when initiative is rolled, victory fanfare when combat ends
+- **Creature-aware** — analyzes D&D 5e creature types (undead, dragon, fiend, etc.) and flavors the music accordingly
+- **Boss detection** — recognizes legendary creatures and high-CR enemies, triggers epic boss fight music
+- **HP monitoring** — reacts to critical HP thresholds (boss low HP = intensified music, party wipe = somber defeat)
+- **12 atmosphere presets** — tavern, dungeon, wilderness, city, temple, underwater, feywild, shadowfell, and more
+- **A/B deck crossfade** — smooth transitions between tracks with configurable crossfade duration
+- **Local caching** — generated tracks are cached in localStorage to avoid redundant API calls
+- **GM control panel** — floating dark-themed panel with atmosphere selector, mood override, volume, and generation status
+- **Suno credits display** — monitor your remaining Suno generation credits
+- **Full API** — accessible at `game.modules.get("atmosphera").api` for macro/module integration
+
+## Requirements
+
+- **FoundryVTT v12**
+- **Suno AI account** with active credits
+- **Suno API proxy** — a self-hosted Suno API server (e.g. [gcui-art/suno-api](https://github.com/gcui-art/suno-api))
+- **2Captcha account** (optional) — for automated captcha solving during generation
 
 ## Installation
 
-### Manual
-1. Download or clone this repository into your Foundry `Data/modules/` directory
-2. Rename the folder to `atmosphera`
-3. Restart Foundry and enable the module in your world
+### Manual Install
+1. Download the [latest release](https://github.com/Schwanky-Dev/fvtt-atmosphera/releases)
+2. Extract to `Data/modules/atmosphera/`
+3. Enable "Atmosphera" in FoundryVTT module settings
 
 ### Manifest URL
 ```
@@ -28,75 +36,104 @@ https://github.com/Schwanky-Dev/fvtt-atmosphera/releases/latest/download/module.
 
 ## Setup
 
-### Prerequisites
-1. **Suno Account** — Sign up at [suno.com](https://suno.com) (Pro or Premier plan recommended for credits)
-2. **Suno API Server** — This module communicates with the [gcui-art/suno-api](https://github.com/gcui-art/suno-api) server
-3. **2Captcha Account** — Required for Suno authentication ([2captcha.com](https://2captcha.com))
+### 1. Deploy Suno API Proxy
 
-### Getting Your Suno Cookie
-1. Log into [suno.com](https://suno.com) in your browser
-2. Open Developer Tools (F12) → Network tab
-3. Find any request to `clerk.suno.com`
-4. Copy the `Cookie` header value
-5. Paste it into the module's "Suno Cookie" setting
+Clone and run a Suno API proxy server:
 
-### Starting the Suno API Server
 ```bash
-cd /path/to/suno-api
-npm install
-# Set your cookie in .env or pass via the module settings
-npm run dev -- -p 3001
+git clone https://github.com/gcui-art/suno-api.git
+cd suno-api
+cp .env.example .env
+# Edit .env with your Suno cookie
+npm install && npm start
 ```
 
-### Module Configuration
-In Foundry → Settings → Module Settings → Atmosphera:
+### 2. Get Your Suno Cookie
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| **Enabled** | ✅ | Master toggle |
-| **Suno API URL** | `http://localhost:3001` | URL of your suno-api server |
-| **Suno Cookie** | — | Your Suno authentication cookie |
-| **2Captcha Key** | — | 2Captcha API key |
-| **Master Volume** | 0.5 | Overall music volume (0–1) |
-| **Auto-Detect Combat** | ✅ | React to combat start/end |
-| **Auto-Detect HP** | ✅ | React to low player HP |
-| **HP Threshold** | 25% | HP % that triggers tense music |
-| **Default Atmosphere** | Calm | Fallback atmosphere for scenes |
-| **Crossfade Duration** | 3s | Transition time between tracks |
+1. Log in to [suno.com](https://suno.com)
+2. Open browser DevTools → Application → Cookies
+3. Copy the full cookie string
 
-## How It Works
+### 3. Configure Atmosphera
 
-1. **Game state changes** (combat starts, scene loads, HP drops) trigger the state detector
-2. The detector analyzes combatants, creature types, HP levels, and scene flags to build a **musical profile** (atmosphere + mood + creature tags + intensity)
-3. The profile is converted to **Suno generation tags** (e.g., "dungeon, dark ambient, undead, minor key, organ, gothic")
-4. If a matching track is **cached**, it plays immediately with a crossfade
-5. If not cached, a new track is **generated** via the Suno API, downloaded, cached, then played
-6. The GM panel shows real-time status throughout
+In FoundryVTT, go to **Settings → Module Settings → Atmosphera**:
 
-## API / Macros
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Suno API URL** | Base URL of your Suno API proxy | `http://localhost:3000` |
+| **Suno Cookie** | Your Suno session cookie (secret) | — |
+| **2Captcha API Key** | 2Captcha key for captcha solving (secret) | — |
+| **Master Volume** | Playback volume (0.0–1.0) | `0.5` |
+| **Enabled** | Toggle automatic music generation | `true` |
+| **Auto-Detect Combat** | Switch music on combat start/end | `true` |
+| **Auto-Detect HP** | React to HP changes | `true` |
+| **HP Threshold (%)** | HP % that triggers mood shifts | `25` |
+| **Default Atmosphere** | Fallback atmosphere when idle | `calm` |
+| **Crossfade Duration** | Track transition time in ms | `3000` |
 
-Access the module API from macros or the console:
+### 4. Open the Panel
+
+Click the 🎵 music icon in the Token Controls toolbar (left sidebar) to open the Atmosphera panel.
+
+## Atmosphere Presets
+
+| Preset | Musical Style |
+|--------|--------------|
+| Tavern | Medieval lute, fiddle, warm folk |
+| Dungeon | Dark ambient, tension, low drones |
+| Wilderness | Open world, orchestral, sweeping |
+| City | Bustling, urban fantasy, lively |
+| Temple | Sacred choir, organ, solemn |
+| Underwater | Deep ambient, whale song, muffled |
+| Feywild | Enchanted, celtic, sparkling |
+| Shadowfell | Bleak, melancholy, hollow wind |
+| Combat | Intense percussion, adrenaline |
+| Boss Fight | Epic orchestral, choir, climactic |
+| Victory | Triumphant fanfare, celebratory |
+| Defeat | Somber, mournful strings |
+| Calm | Peaceful ambient, soft piano |
+
+## API Usage
 
 ```javascript
 const api = game.modules.get("atmosphera").api;
 
-// Trigger a state reaction
-api.react("manual");
-
-// Set atmosphere
+// Set atmosphere manually
 api.setAtmosphere("dungeon");
 
-// Stop music
+// Stop playback
 api.stop();
 
-// Clear the cache
-api.clearCache();
+// Open control panel
+api.openPanel();
+
+// Check credits
+const credits = await api.getCredits();
+
+// Direct Suno generation
+const result = await api.generate("epic orchestral", "Battle Theme");
 ```
 
-## Compatibility
+## Creature Type Tags
 
-- **FoundryVTT:** v12+
-- **Game Systems:** Designed for dnd5e but creature detection gracefully degrades for other systems
+When combat includes specific creature types, Atmosphera blends their musical tags into the generation prompt:
+
+| Type | Musical Flavor |
+|------|---------------|
+| Aberration | Eerie, dissonant, alien |
+| Beast | Primal, tribal drums, wild |
+| Celestial | Angelic choir, radiant, holy |
+| Construct | Mechanical, industrial, clockwork |
+| Dragon | Epic brass fanfare, majestic |
+| Elemental | Primal forces, raw energy |
+| Fey | Whimsical, celtic harp, mystical |
+| Fiend | Dark, infernal, demonic choir |
+| Giant | Thunderous, deep drums, massive |
+| Humanoid | Adventurous, orchestral |
+| Monstrosity | Tense, suspenseful, predatory |
+| Ooze | Bubbling, ambient, unsettling |
+| Plant | Organic, creeping, overgrowth |
+| Undead | Haunting, ghostly, spectral |
 
 ## License
 
