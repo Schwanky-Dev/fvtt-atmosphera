@@ -1,12 +1,11 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v2.0 — Dynamic prompt construction with Foundry playlist integration
+ * v2.1 — Full audio lifecycle ownership. Enable, configure, forget.
  */
 
 const MODULE_ID = "atmosphera";
 
 /* ──────────────────────────── FALLBACK HINT MAPS ──────────────────────────── */
-// These are NOT the primary system — they enrich dynamically built prompts with flavor words.
 
 const CREATURE_HINTS = {
   aberration: "eerie dissonant alien otherworldly",
@@ -124,7 +123,7 @@ function registerSettings() {
 
   s("enabled", {
     name: "Enable Atmosphera",
-    hint: "Toggle automatic atmosphere music generation.",
+    hint: "Master switch. When on, music plays automatically based on game state.",
     scope: "world", config: true, type: Boolean, default: true
   });
 
@@ -164,7 +163,6 @@ function registerSettings() {
 
 class GameStateCollector {
 
-  /** Collect everything about the current game state */
   static collect() {
     return {
       combat: this._collectCombat(),
@@ -175,16 +173,14 @@ class GameStateCollector {
 
   static _collectCombat() {
     const combat = game.combat;
-    if (!combat?.active) return { active: false, round: 0, turn: 0, creatures: [], bosses: [], hasBoss: false };
+    if (!combat?.active) return { active: false, round: 0, turn: 0, creatures: [], bosses: [], hasBoss: false, creatureTypes: [], crRange: null };
 
     const creatures = [];
     const bosses = [];
 
     for (const c of combat.combatants) {
       const actor = c.actor;
-      if (!actor) continue;
-      // Skip player-owned
-      if (actor.hasPlayerOwner) continue;
+      if (!actor || actor.hasPlayerOwner) continue;
 
       const type = actor.system?.details?.type?.value?.toLowerCase() || "unknown";
       const cr = actor.system?.details?.cr ?? 0;
@@ -198,40 +194,27 @@ class GameStateCollector {
     const crValues = creatures.map(c => c.cr).filter(c => c > 0);
     const crRange = crValues.length ? { min: Math.min(...crValues), max: Math.max(...crValues) } : null;
 
-    return {
-      active: true,
-      round: combat.round || 1,
-      turn: combat.turn || 0,
-      creatures,
-      bosses,
-      hasBoss: bosses.length > 0,
-      creatureTypes,
-      crRange
-    };
+    return { active: true, round: combat.round || 1, turn: combat.turn || 0, creatures, bosses, hasBoss: bosses.length > 0, creatureTypes, crRange };
   }
 
   static _collectParty() {
     const partyActors = game.actors?.filter(a => a.hasPlayerOwner && a.type === "character") || [];
-    if (!partyActors.length) return { hpPct: 1, resourcePct: 1, count: 0 };
+    if (!partyActors.length) return { hpPct: 1, resourcePct: 1, count: 0, allDown: false };
 
-    // HP
     let totalHp = 0, totalMaxHp = 0;
     for (const a of partyActors) {
       const hp = a.system?.attributes?.hp;
-      if (hp) {
-        totalHp += hp.value || 0;
-        totalMaxHp += hp.max || 0;
-      }
+      if (hp) { totalHp += hp.value || 0; totalMaxHp += hp.max || 0; }
     }
     const hpPct = totalMaxHp > 0 ? totalHp / totalMaxHp : 1;
+    const allDown = partyActors.every(a => (a.system?.attributes?.hp?.value || 0) <= 0);
 
-    // Resources
     let resourcePct = 1;
     if (game.settings.get(MODULE_ID, "resourceTracking")) {
       resourcePct = this._calcResourcePct(partyActors);
     }
 
-    return { hpPct, resourcePct, count: partyActors.length };
+    return { hpPct, resourcePct, count: partyActors.length, allDown };
   }
 
   static _calcResourcePct(actors) {
@@ -241,46 +224,30 @@ class GameStateCollector {
       const sys = actor.system;
       if (!sys) continue;
 
-      // Spell slots (spell1 through spell9)
       if (sys.spells) {
         for (let i = 1; i <= 9; i++) {
           const slot = sys.spells[`spell${i}`];
-          if (slot && slot.max > 0) {
-            totalCurrent += slot.value || 0;
-            totalMax += slot.max;
-          }
+          if (slot && slot.max > 0) { totalCurrent += slot.value || 0; totalMax += slot.max; }
         }
       }
 
-      // Hit dice — parse "3d10" format, compare to class level
       const hitDiceStr = sys.details?.hitDice;
       if (hitDiceStr && typeof hitDiceStr === "string") {
         const match = hitDiceStr.match(/^(\d+)d\d+$/);
         if (match) {
           const remaining = parseInt(match[1]);
-          // Class level as max hit dice
           const level = sys.details?.level || remaining;
-          totalCurrent += remaining;
-          totalMax += level;
+          totalCurrent += remaining; totalMax += level;
         }
       }
-      // Fallback: if hitDice is on classes
-      if (sys.attributes?.hd) {
-        const hd = sys.attributes.hd;
-        if (typeof hd === "object") {
-          // v3+ format
-          totalCurrent += hd.value || 0;
-          totalMax += hd.max || 0;
-        }
+      if (sys.attributes?.hd && typeof sys.attributes.hd === "object") {
+        totalCurrent += sys.attributes.hd.value || 0;
+        totalMax += sys.attributes.hd.max || 0;
       }
 
-      // Class resources (primary, secondary, tertiary)
       for (const rKey of ["primary", "secondary", "tertiary"]) {
         const res = sys.resources?.[rKey];
-        if (res && res.max > 0) {
-          totalCurrent += res.value || 0;
-          totalMax += res.max;
-        }
+        if (res && res.max > 0) { totalCurrent += res.value || 0; totalMax += res.max; }
       }
     }
 
@@ -289,27 +256,25 @@ class GameStateCollector {
 
   static _collectScene() {
     const scene = canvas?.scene;
-    if (!scene) return { name: "", darkness: 0, weather: null, keywords: [] };
+    if (!scene) return { name: "", darkness: 0, weather: null, keywords: [], environments: [], active: false };
 
     const name = scene.name || "";
     const darkness = scene.darkness ?? 0;
     const weather = scene.getFlag("core", "weather") || scene.weather || null;
 
-    // Extract environment tags from actors in scene
     const environments = new Set();
     for (const token of scene.tokens || []) {
       const env = token.actor?.system?.details?.environment;
       if (env) environments.add(env.toLowerCase());
     }
 
-    // Extract keywords from scene name
     const keywords = [];
     const nameLower = name.toLowerCase();
     for (const kw of Object.keys(SCENE_KEYWORD_HINTS)) {
       if (nameLower.includes(kw)) keywords.push(kw);
     }
 
-    return { name, darkness, weather, keywords, environments: [...environments] };
+    return { name, darkness, weather, keywords, environments: [...environments], active: true };
   }
 }
 
@@ -317,95 +282,68 @@ class GameStateCollector {
 
 class PromptBuilder {
 
-  /**
-   * Build a natural language prompt from game state.
-   * Returns { prompt: string, category: string, title: string }
-   */
   static build(state, moodOverride = null) {
     const parts = [];
     const prefix = game.settings.get(MODULE_ID, "promptPrefix")?.trim();
 
-    // Always instrumental
     parts.push("instrumental");
-
-    // Style prefix from settings
     if (prefix) parts.push(prefix);
 
-    // Mood override takes priority for flavor
     if (moodOverride && moodOverride !== "auto") {
       const preset = MOOD_PRESETS[moodOverride];
-      if (preset) {
-        parts.push(preset);
-      } else {
-        parts.push(moodOverride);
-      }
+      parts.push(preset || moodOverride);
     }
 
     const { combat, party, scene } = state;
     let category = "ambient";
 
     if (combat.active) {
-      // Combat prompt
       category = this._buildCombatCategory(combat);
       parts.push(this._buildCombatPrompt(combat));
     } else {
-      // Ambient / exploration prompt
       category = this._buildAmbientCategory(scene);
       parts.push(this._buildAmbientPrompt(scene));
     }
 
-    // Party condition
     const hpDesc = getDescriptor(party.hpPct, HP_DESCRIPTORS);
     const resDesc = getDescriptor(party.resourcePct, RESOURCE_DESCRIPTORS);
     if (hpDesc) parts.push(`party ${hpDesc}`);
     if (resDesc) parts.push(resDesc);
 
-    // Combine and clean
     const prompt = parts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
-    const title = this._buildTitle(combat, scene, category);
+    const title = this._buildTitle(combat, scene);
 
     return { prompt, category, title };
   }
 
   static _buildCombatPrompt(combat) {
     const parts = [];
-
     if (combat.hasBoss) {
       parts.push("epic boss battle music, climactic, orchestral, choir");
-      const bossNames = combat.bosses.map(b => b.name).join(" and ");
-      parts.push(`fighting ${bossNames}`);
+      parts.push(`fighting ${combat.bosses.map(b => b.name).join(" and ")}`);
     } else {
       parts.push("intense combat music, battle, percussion, adrenaline");
     }
-
-    // Creature flavor
     for (const type of combat.creatureTypes.slice(0, 3)) {
       parts.push(`fighting ${type}`);
       if (CREATURE_HINTS[type]) parts.push(CREATURE_HINTS[type]);
     }
-
-    // CR-based intensity
     if (combat.crRange) {
       if (combat.crRange.max >= 15) parts.push("extremely dangerous, legendary threat");
       else if (combat.crRange.max >= 10) parts.push("powerful enemies, high stakes");
       else if (combat.crRange.max >= 5) parts.push("challenging foes");
     }
-
     return parts.join(", ");
   }
 
   static _buildCombatCategory(combat) {
     const types = combat.creatureTypes.slice(0, 2).join("-") || "generic";
-    if (combat.hasBoss) {
-      const bossType = combat.bosses[0]?.type || "unknown";
-      return `boss-${bossType}`;
-    }
+    if (combat.hasBoss) return `boss-${combat.bosses[0]?.type || "unknown"}`;
     return `combat-${types}`;
   }
 
   static _buildAmbientPrompt(scene) {
     const parts = [];
-
     if (scene.keywords.length) {
       parts.push("background music");
       for (const kw of scene.keywords.slice(0, 3)) {
@@ -416,19 +354,10 @@ class PromptBuilder {
     } else {
       parts.push("peaceful ambient background music, gentle exploration");
     }
-
-    // Darkness
     if (scene.darkness > 0.7) parts.push("dark, torchlit, shadows");
     else if (scene.darkness > 0.4) parts.push("dim, moody lighting");
-
-    // Weather
     if (scene.weather) parts.push(`${scene.weather} weather`);
-
-    // Environment tags from actors
-    for (const env of (scene.environments || []).slice(0, 2)) {
-      parts.push(env);
-    }
-
+    for (const env of (scene.environments || []).slice(0, 2)) parts.push(env);
     return parts.join(", ");
   }
 
@@ -438,7 +367,7 @@ class PromptBuilder {
     return "ambient-general";
   }
 
-  static _buildTitle(combat, scene, category) {
+  static _buildTitle(combat, scene) {
     const parts = ["Atmosphera"];
     if (combat.active) {
       parts.push(combat.hasBoss ? "Boss Battle" : "Combat");
@@ -449,7 +378,6 @@ class PromptBuilder {
     return parts.join(" — ");
   }
 
-  /** Build a victory/defeat sting prompt */
   static buildSting(type) {
     const stings = {
       victory: { prompt: "instrumental, triumphant victory fanfare, celebratory, brass, short", category: "sting-victory", title: "Atmosphera — Victory" },
@@ -467,23 +395,13 @@ class SunoClient {
   }
 
   static _headers() {
-    return {
-      "Content-Type": "application/json",
-      Cookie: game.settings.get(MODULE_ID, "sunoCookie")
-    };
+    return { "Content-Type": "application/json", Cookie: game.settings.get(MODULE_ID, "sunoCookie") };
   }
 
   static async generate(prompt, title) {
     const resp = await fetch(`${this._baseUrl()}/api/generate`, {
-      method: "POST",
-      headers: this._headers(),
-      body: JSON.stringify({
-        prompt: "",
-        tags: prompt,
-        title,
-        make_instrumental: true,
-        wait_audio: false
-      })
+      method: "POST", headers: this._headers(),
+      body: JSON.stringify({ prompt: "", tags: prompt, title, make_instrumental: true, wait_audio: false })
     });
     if (!resp.ok) throw new Error(`Suno generate failed: ${resp.status}`);
     return resp.json();
@@ -491,45 +409,31 @@ class SunoClient {
 
   static async poll(ids) {
     const query = Array.isArray(ids) ? ids.join(",") : ids;
-    const resp = await fetch(`${this._baseUrl()}/api/get?ids=${query}`, {
-      headers: this._headers()
-    });
+    const resp = await fetch(`${this._baseUrl()}/api/get?ids=${query}`, { headers: this._headers() });
     if (!resp.ok) throw new Error(`Suno poll failed: ${resp.status}`);
     return resp.json();
   }
 
   static async getCredits() {
-    const resp = await fetch(`${this._baseUrl()}/api/get_limit`, {
-      headers: this._headers()
-    });
+    const resp = await fetch(`${this._baseUrl()}/api/get_limit`, { headers: this._headers() });
     if (!resp.ok) throw new Error(`Suno credits failed: ${resp.status}`);
     return resp.json();
   }
 
-  /** Generate, poll until complete, return track data */
   static async generateAndWait(prompt, title) {
     console.log(`${MODULE_ID} | Generating: "${title}" — ${prompt}`);
     const genResult = await this.generate(prompt, title);
     const ids = genResult.map(r => r.id);
 
-    const maxAttempts = 60;
-    for (let i = 0; i < maxAttempts; i++) {
+    for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 5000));
       const status = await this.poll(ids);
       const done = status.filter(s => s.status === "complete");
       if (done.length > 0) {
         const track = done[0];
-        return {
-          id: track.id,
-          url: track.audio_url,
-          title: track.title,
-          tags: track.metadata?.tags || prompt,
-          duration: track.metadata?.duration
-        };
+        return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration };
       }
-      if (status.every(s => s.status === "error")) {
-        throw new Error("All Suno generations failed");
-      }
+      if (status.every(s => s.status === "error")) throw new Error("All Suno generations failed");
     }
     throw new Error("Suno generation timed out");
   }
@@ -540,44 +444,26 @@ class SunoClient {
 class PlaylistCacheManager {
   static PLAYLIST_PREFIX = "Atmosphera";
 
-  /**
-   * Look up an existing Atmosphera playlist + sound for the given category.
-   * Returns { playlist, sound, url } or null.
-   */
   static findCached(category) {
     const playlistName = this._playlistName(category);
     const playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist || !playlist.sounds.size) return null;
 
-    // Pick a random sound from the playlist for variety
     const sounds = [...playlist.sounds];
     const sound = sounds[Math.floor(Math.random() * sounds.length)];
     return { playlist, sound, url: sound.path };
   }
 
-  /**
-   * Download a Suno track, upload to Foundry, create/update playlist.
-   * Returns the PlaylistSound path.
-   */
   static async saveTrack(category, track) {
     const folder = game.settings.get(MODULE_ID, "audioFolder") || "atmosphera";
     const subFolder = category.replace(/[^a-z0-9-]/gi, "-");
     const dirPath = `${folder}/${subFolder}`;
 
-    // Ensure directory exists
-    try {
-      await FilePicker.browse("data", dirPath);
-    } catch {
-      // Create directories recursively
-      try {
-        await FilePicker.browse("data", folder);
-      } catch {
-        await FilePicker.createDirectory("data", folder);
-      }
+    try { await FilePicker.browse("data", dirPath); } catch {
+      try { await FilePicker.browse("data", folder); } catch { await FilePicker.createDirectory("data", folder); }
       await FilePicker.createDirectory("data", dirPath);
     }
 
-    // Download the audio file from Suno URL
     const filename = `${track.id}.mp3`;
     let filePath;
     try {
@@ -589,35 +475,28 @@ class PlaylistCacheManager {
       filePath = uploadResult.path;
     } catch (e) {
       console.warn(`${MODULE_ID} | Failed to download/upload track, using remote URL`, e);
-      filePath = track.url; // Fallback to streaming from Suno
+      filePath = track.url;
     }
 
-    // Find or create playlist
     const playlistName = this._playlistName(category);
     let playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist) {
       playlist = await Playlist.create({
-        name: playlistName,
-        mode: CONST.PLAYLIST_MODES.SEQUENTIAL,
-        description: `Auto-generated by Atmosphera for "${category}"`,
-        playing: false
+        name: playlistName, mode: CONST.PLAYLIST_MODES.SEQUENTIAL,
+        description: `Auto-generated by Atmosphera for "${category}"`, playing: false
       });
     }
 
-    // Add sound to playlist
     await playlist.createEmbeddedDocuments("PlaylistSound", [{
       name: track.title || `${category} — ${track.id}`,
-      path: filePath,
-      volume: 0.8,
-      repeat: true
+      path: filePath, volume: 0.8, repeat: true
     }]);
 
     return filePath;
   }
 
-  /** Get or generate a track for the given prompt/category */
+  /** Get cached track or generate + save. Returns playable URL/path. */
   static async getOrGenerate(prompt, title, category, statusCb) {
-    // Check cache first
     const cached = this.findCached(category);
     if (cached) {
       console.log(`${MODULE_ID} | Playlist cache hit: ${category}`);
@@ -625,19 +504,29 @@ class PlaylistCacheManager {
       return cached.url;
     }
 
-    // Generate new
     statusCb?.("Generating…");
     const track = await SunoClient.generateAndWait(prompt, title);
-
-    // Save to Foundry
     statusCb?.("Downloading…");
-    const path = await this.saveTrack(category, track);
+    return this.saveTrack(category, track);
+  }
 
-    return path;
+  /**
+   * Pre-generate a track in the background. Resolves silently; errors are logged.
+   * Returns a promise that resolves to the file path, or null on failure.
+   */
+  static async preload(prompt, title, category) {
+    if (this.findCached(category)) return; // Already have it
+    try {
+      console.log(`${MODULE_ID} | Preloading: ${category}`);
+      const track = await SunoClient.generateAndWait(prompt, title);
+      await this.saveTrack(category, track);
+      console.log(`${MODULE_ID} | Preloaded: ${category}`);
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Preload failed for ${category}:`, e);
+    }
   }
 
   static _playlistName(category) {
-    // "combat-undead" -> "Atmosphera — Combat (Undead)"
     const parts = category.split("-");
     const type = (parts[0] || "misc").replace(/^\w/, c => c.toUpperCase());
     const detail = parts.slice(1).join(" ").replace(/^\w/, c => c.toUpperCase()) || "";
@@ -654,6 +543,7 @@ class AudioManager {
     this.activeDeck = "A";
     this.volume = 0.5;
     this._fadeInterval = null;
+    this.currentUrl = null;
   }
 
   setVolume(v) {
@@ -663,6 +553,7 @@ class AudioManager {
   }
 
   async play(url, crossfadeDuration = 3000) {
+    this.currentUrl = url;
     const incoming = new Audio(url);
     incoming.crossOrigin = "anonymous";
     incoming.volume = 0;
@@ -670,13 +561,8 @@ class AudioManager {
 
     const outgoing = this.activeDeck === "A" ? this.deckA : this.deckB;
 
-    if (this.activeDeck === "A") {
-      this.deckB = incoming;
-      this.activeDeck = "B";
-    } else {
-      this.deckA = incoming;
-      this.activeDeck = "A";
-    }
+    if (this.activeDeck === "A") { this.deckB = incoming; this.activeDeck = "B"; }
+    else { this.deckA = incoming; this.activeDeck = "A"; }
 
     try { await incoming.play(); } catch (e) {
       console.warn(`${MODULE_ID} | Audio play blocked:`, e);
@@ -711,6 +597,7 @@ class AudioManager {
     if (active) this._crossfade(active, null, fadeDuration);
     this.deckA = null;
     this.deckB = null;
+    this.currentUrl = null;
   }
 
   get isPlaying() {
@@ -747,21 +634,28 @@ class AtmospheraPanel extends Application {
     const isAuto = c.autoMode;
     const isPlaying = c.audioManager.isPlaying;
     const manualMood = c.manualMood;
+    const enabled = game.settings.get(MODULE_ID, "enabled");
 
     const moodOptions = Object.keys(MOOD_PRESETS).map(k =>
-      `<option value="${k}" ${manualMood === k ? "selected" : ""}>${k.replace(/^\w/, c => c.toUpperCase())}</option>`
+      `<option value="${k}" ${manualMood === k ? "selected" : ""}>${k.replace(/^\w/, ch => ch.toUpperCase())}</option>`
     ).join("");
+
+    const preloadStatus = c._preloadStatus
+      ? `<div class="atmo-preload-status">⏳ Preloading: ${c._preloadStatus}</div>` : "";
 
     const html = $(`
       <div class="atmosphera-controls">
         <div class="atmo-section">
-          <label>Mode</label>
+          <label>Master</label>
           <div class="atmo-mode-toggle">
-            <button id="atmo-auto-toggle" class="${isAuto ? "active" : ""}">
+            <button id="atmo-enabled-toggle" class="${enabled ? "active" : ""}" title="Master on/off — music plays automatically when enabled">
+              ${enabled ? "🔊 Enabled" : "🔇 Disabled"}
+            </button>
+            <button id="atmo-auto-toggle" class="${isAuto ? "active" : ""}" title="${isAuto ? "Auto mode — reads game state" : "Manual — GM override active"}">
               ${isAuto ? "🔄 Auto" : "🔒 Manual"}
             </button>
-            ${!isAuto && manualMood ? `<span class="atmo-manual-indicator">🔒 Manual — ${manualMood}</span>` : ""}
           </div>
+          ${!isAuto && manualMood ? `<span class="atmo-manual-indicator">🔒 Manual — ${manualMood}</span>` : ""}
         </div>
 
         <div class="atmo-section">
@@ -795,37 +689,38 @@ class AtmospheraPanel extends Application {
           <div id="atmo-gen-status">${c.generationStatus || "Idle"}</div>
           <div id="atmo-credits">Credits: ${c.credits ?? "—"}</div>
           <div id="atmo-track-info">${c.currentTrackInfo || ""}</div>
+          ${preloadStatus}
         </div>
       </div>
     `);
 
     // Events
+    html.find("#atmo-enabled-toggle").on("click", () => {
+      const newVal = !game.settings.get(MODULE_ID, "enabled");
+      game.settings.set(MODULE_ID, "enabled", newVal);
+      if (newVal) {
+        c.evaluateAndPlay(true);
+      } else {
+        c.stop();
+      }
+      setTimeout(() => this.render(), 100);
+    });
+
     html.find("#atmo-auto-toggle").on("click", () => {
       c.autoMode = !c.autoMode;
-      if (c.autoMode) {
-        c.manualMood = null;
-        c.evaluateAndPlay();
-      }
+      if (c.autoMode) { c.manualMood = null; c.evaluateAndPlay(true); }
       this.render();
     });
 
     html.find("#atmo-mood-select").on("change", (e) => {
-      const mood = e.target.value;
-      if (mood) {
-        c.setMood(mood);
-      }
+      if (e.target.value) c.setMood(e.target.value);
     });
 
     html.find("#atmo-play").on("click", () => {
-      // Use the prompt from textarea (GM may have edited it)
-      const customPrompt = html.find("#atmo-prompt-display").val();
-      c.triggerGeneration(customPrompt);
+      c.triggerGeneration(html.find("#atmo-prompt-display").val());
     });
 
-    html.find("#atmo-stop").on("click", () => {
-      c.stop();
-      this.render();
-    });
+    html.find("#atmo-stop").on("click", () => { c.stop(); this.render(); });
 
     html.find("#atmo-volume").on("input", (e) => {
       const v = parseFloat(e.target.value);
@@ -872,6 +767,9 @@ class AtmospheraController {
     this.currentTrackInfo = "";
     this._generating = false;
     this._lastCategory = null;
+    this._preloadStatus = null;
+    this._preloadPromises = new Map(); // category -> Promise
+    this._stingSavedCategory = null;   // category to revert to after sting
   }
 
   init() {
@@ -889,42 +787,39 @@ class AtmospheraController {
     if (mood === "auto") {
       this.autoMode = true;
       this.manualMood = null;
-      this.evaluateAndPlay();
     } else {
       this.autoMode = false;
       this.manualMood = mood;
-      this.evaluateAndPlay();
     }
+    this.evaluateAndPlay(true);
     if (this.panel) this.panel.render();
   }
 
-  /** Evaluate game state, build prompt, and play if category changed */
+  /**
+   * Core evaluation loop: collect state → build prompt → play if changed.
+   * This is the heartbeat of the entire system.
+   */
   evaluateAndPlay(force = false) {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
-    if (!game.settings.get(MODULE_ID, "autoDetect") && this.autoMode) return;
 
     const state = GameStateCollector.collect();
     const { prompt, category, title } = PromptBuilder.build(state, this.manualMood);
 
     this.currentPrompt = prompt;
+    this.currentCategory = category;
     if (this.panel) this.panel.updatePrompt(prompt);
 
-    // Only generate if category actually changed (or forced)
-    if (!force && category === this._lastCategory && this.audioManager.isPlaying) {
-      return;
-    }
+    // Skip generation if same category is already playing (unless forced)
+    if (!force && category === this._lastCategory && this.audioManager.isPlaying) return;
 
     this._lastCategory = category;
-    this.currentCategory = category;
     this._doGenerate(prompt, title, category);
   }
 
   /** Trigger generation with a specific prompt string (from panel edit) */
-  async triggerGeneration(customPrompt) {
+  triggerGeneration(customPrompt) {
     const prompt = customPrompt || this.currentPrompt;
-    const category = this.currentCategory || "custom";
-    const title = `Atmosphera — Custom`;
-    this._doGenerate(prompt, title, category);
+    this._doGenerate(prompt, `Atmosphera — Custom`, this.currentCategory || "custom");
   }
 
   async _doGenerate(prompt, title, category) {
@@ -932,13 +827,10 @@ class AtmospheraController {
     this._generating = true;
 
     try {
-      const url = await PlaylistCacheManager.getOrGenerate(
-        prompt, title, category,
-        (s) => this._setStatus(s)
-      );
+      const url = await PlaylistCacheManager.getOrGenerate(prompt, title, category, (s) => this._setStatus(s));
 
       this._setStatus("Playing");
-      this.currentTrackInfo = `${category}`;
+      this.currentTrackInfo = category;
       if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
 
       const crossfade = game.settings.get(MODULE_ID, "crossfadeDuration");
@@ -955,19 +847,46 @@ class AtmospheraController {
     }
   }
 
-  /** Play a victory/defeat sting, then revert to ambient after delay */
+  /**
+   * Preload tracks in the background (fire-and-forget).
+   * Used to pre-generate victory/defeat stings when combat starts.
+   */
+  preload(categories) {
+    for (const cat of categories) {
+      if (this._preloadPromises.has(cat)) continue; // Already preloading
+      if (PlaylistCacheManager.findCached(cat)) continue; // Already cached
+
+      const { prompt, title } = PromptBuilder.buildSting(cat.replace("sting-", ""));
+      this._preloadStatus = cat;
+      if (this.panel) this.panel.render();
+
+      const p = PlaylistCacheManager.preload(prompt, title, cat).finally(() => {
+        this._preloadPromises.delete(cat);
+        if (this._preloadPromises.size === 0) {
+          this._preloadStatus = null;
+          if (this.panel) this.panel.render();
+        }
+      });
+      this._preloadPromises.set(cat, p);
+    }
+  }
+
+  /** Play a victory/defeat sting, then crossfade back to ambient */
   async playSting(type) {
     const { prompt, category, title } = PromptBuilder.buildSting(type);
     this.currentPrompt = prompt;
     if (this.panel) this.panel.updatePrompt(prompt);
+
+    // Remember what to revert to
+    this._stingSavedCategory = this._lastCategory;
     this._lastCategory = category;
 
     await this._doGenerate(prompt, title, category);
 
-    // After 30 seconds, revert to scene ambient (if auto mode)
+    // Revert to ambient after sting plays (~30s)
     setTimeout(() => {
       if (this.autoMode && !game.combat?.active) {
-        this._lastCategory = null; // Force re-evaluation
+        this._lastCategory = null;
         this.evaluateAndPlay(true);
       }
     }, 30000);
@@ -993,11 +912,11 @@ class AtmospheraController {
   }
 }
 
-/* ──────────────────────────── HOOKS ──────────────────────────── */
+/* ──────────────────────────── HOOKS — FULL LIFECYCLE ──────────────────────────── */
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v2`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v2.1`);
 });
 
 Hooks.once("ready", () => {
@@ -1006,7 +925,7 @@ Hooks.once("ready", () => {
   const controller = new AtmospheraController();
   controller.init();
 
-  // Expose API (including macro support)
+  // ── Expose API ──
   const moduleData = game.modules.get(MODULE_ID);
   if (moduleData) {
     moduleData.api = {
@@ -1018,86 +937,143 @@ Hooks.once("ready", () => {
       openPanel: () => controller.openPanel(),
       getCredits: () => SunoClient.getCredits(),
       evaluate: () => controller.evaluateAndPlay(true),
-      // Expose maps for extensibility
-      CREATURE_HINTS,
-      SCENE_KEYWORD_HINTS,
-      MOOD_PRESETS
+      CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
     };
   }
 
-  // Scene control button
+  // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
     const tokenControls = controls.find(c => c.name === "token");
     if (tokenControls) {
       tokenControls.tools.push({
-        name: "atmosphera",
-        title: "Atmosphera — AI Music",
-        icon: "fas fa-music",
-        button: true,
+        name: "atmosphera", title: "Atmosphera — AI Music",
+        icon: "fas fa-music", button: true,
         onClick: () => controller.openPanel()
       });
     }
   });
 
-  // ── Combat Hooks ──
+  // ════════════════════════════════════════════════════════════════
+  //  AUTO-START: Begin playing as soon as the world is ready
+  //  The GM enables the module and forgets about it.
+  // ════════════════════════════════════════════════════════════════
 
-  Hooks.on("combatStart", () => {
-    if (!game.settings.get(MODULE_ID, "autoDetect")) return;
+  if (game.settings.get(MODULE_ID, "enabled")) {
+    // Short delay to let canvas finish initializing
+    setTimeout(() => {
+      console.log(`${MODULE_ID} | Auto-starting on world ready`);
+      controller.evaluateAndPlay(true);
+    }, 2000);
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  SCENE TRANSITIONS: Crossfade to new ambient on scene change
+  // ════════════════════════════════════════════════════════════════
+
+  Hooks.on("canvasReady", () => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
-    console.log(`${MODULE_ID} | Combat started`);
+    // If combat is active, combat hooks own the music
+    if (game.combat?.active) return;
+    console.log(`${MODULE_ID} | Scene activated — evaluating ambient`);
+    controller._lastCategory = null; // Force new evaluation
     controller.evaluateAndPlay(true);
   });
 
-  Hooks.on("deleteCombat", () => {
-    if (!game.settings.get(MODULE_ID, "autoDetect")) return;
+  // ════════════════════════════════════════════════════════════════
+  //  COMBAT LIFECYCLE: Seamless combat ↔ ambient transitions
+  // ════════════════════════════════════════════════════════════════
+
+  Hooks.on("combatStart", () => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
-    console.log(`${MODULE_ID} | Combat deleted`);
+    console.log(`${MODULE_ID} | Combat started — switching to combat music`);
+    controller.evaluateAndPlay(true);
+
+    // Preload victory/defeat stings in background so transitions are instant
+    controller.preload(["sting-victory", "sting-defeat"]);
+  });
+
+  Hooks.on("updateCombat", (combat, changed) => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
+    if (!controller.autoMode) return;
+    if (!("round" in changed)) return;
+    // Re-evaluate each round (new creatures may have appeared, HP changed)
+    controller.evaluateAndPlay();
+  });
+
+  Hooks.on("combatEnd", () => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
+    if (!controller.autoMode) return;
+    console.log(`${MODULE_ID} | Combat ended`);
+
+    const party = GameStateCollector._collectParty();
+    controller.playSting(party.allDown ? "defeat" : "victory");
+  });
+
+  Hooks.on("deleteCombat", () => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
+    if (!controller.autoMode) return;
+    console.log(`${MODULE_ID} | Combat deleted — reverting to ambient`);
     controller._lastCategory = null;
     controller.evaluateAndPlay(true);
   });
 
-  Hooks.on("combatEnd", (combat) => {
-    if (!game.settings.get(MODULE_ID, "autoDetect")) return;
-    if (!controller.autoMode) return;
-    console.log(`${MODULE_ID} | Combat ended`);
-
-    // Check if party won or lost
-    const partyActors = game.actors.filter(a => a.hasPlayerOwner && a.system?.attributes?.hp);
-    const allDown = partyActors.length > 0 && partyActors.every(a => (a.system.attributes.hp.value || 0) <= 0);
-
-    controller.playSting(allDown ? "defeat" : "victory");
-  });
-
-  Hooks.on("updateCombat", (combat, changed) => {
-    if (!game.settings.get(MODULE_ID, "autoDetect")) return;
-    if (!controller.autoMode) return;
-    if (!("round" in changed)) return;
-    controller.evaluateAndPlay();
-  });
+  // ════════════════════════════════════════════════════════════════
+  //  LIVE UPDATES: React to HP / resource changes mid-combat
+  // ════════════════════════════════════════════════════════════════
 
   Hooks.on("updateActor", (actor, changed) => {
-    if (!game.settings.get(MODULE_ID, "autoDetect")) return;
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     if (!game.combat?.active) return;
 
-    // React to HP or resource changes
     const hpChanged = changed?.system?.attributes?.hp;
     const spellsChanged = changed?.system?.spells;
     const resourcesChanged = changed?.system?.resources;
 
     if (hpChanged || spellsChanged || resourcesChanged) {
-      controller.evaluateAndPlay();
+      // Debounce: many updates can fire in rapid succession
+      clearTimeout(controller._updateActorTimer);
+      controller._updateActorTimer = setTimeout(() => {
+        controller.evaluateAndPlay();
+      }, 500);
     }
   });
 
-  Hooks.on("canvasReady", () => {
+  // ════════════════════════════════════════════════════════════════
+  //  PAUSE / UNPAUSE: Stop music when game is paused
+  // ════════════════════════════════════════════════════════════════
+
+  Hooks.on("pauseGame", (paused) => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
-    if (!controller.autoMode) return;
-    if (game.combat?.active) return;
-    console.log(`${MODULE_ID} | Scene changed`);
-    controller._lastCategory = null;
-    controller.evaluateAndPlay(true);
+    if (paused) {
+      console.log(`${MODULE_ID} | Game paused — fading out`);
+      controller.audioManager.stop(2000);
+      controller._setStatus("Paused");
+    } else {
+      console.log(`${MODULE_ID} | Game unpaused — resuming`);
+      controller._lastCategory = null;
+      controller.evaluateAndPlay(true);
+    }
   });
 
-  ui.notifications.info("Atmosphera v2 ready — click 🎵 in token controls to open panel.");
+  // ════════════════════════════════════════════════════════════════
+  //  SETTING CHANGES: React to enabled toggle without reload
+  // ════════════════════════════════════════════════════════════════
+
+  Hooks.on("updateSetting", (setting) => {
+    if (setting.key !== `${MODULE_ID}.enabled`) return;
+    const enabled = game.settings.get(MODULE_ID, "enabled");
+    if (enabled) {
+      console.log(`${MODULE_ID} | Enabled — starting playback`);
+      controller._lastCategory = null;
+      controller.evaluateAndPlay(true);
+    } else {
+      console.log(`${MODULE_ID} | Disabled — stopping`);
+      controller.stop();
+    }
+  });
+
+  ui.notifications.info("Atmosphera v2.1 ready — music will play automatically.");
 });
