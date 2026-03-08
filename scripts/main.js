@@ -452,7 +452,7 @@ class SunoClient {
       const done = status.filter(s => s.status === "complete");
       if (done.length > 0) {
         const track = done[0];
-        return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration };
+        return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration, prompt };
       }
       if (status.every(s => s.status === "error")) throw new Error("All Suno generations failed");
     }
@@ -607,7 +607,9 @@ class PlaylistCacheManager {
 
     await playlist.createEmbeddedDocuments("PlaylistSound", [{
       name: track.title || `${category} — ${track.id}`,
-      path: filePath, volume: 0.8, repeat: true
+      path: filePath, volume: 0.8, repeat: true,
+      description: track.prompt || `Generated for: ${category}`,
+      flags: { [MODULE_ID]: { prompt: track.prompt || "", category, generatedAt: Date.now(), sunoId: track.id } }
     }]);
 
     return filePath;
@@ -1449,28 +1451,23 @@ Hooks.once("ready", () => {
     }
   }
 
-  // ── Scene control button (v13 compatible) ──
+  // ── Scene control button (v13) ──
   Hooks.on("getSceneControlButtons", (controls) => {
-    // v13: controls is an array of SceneControl objects
-    if (Array.isArray(controls)) {
-      const tokenControls = controls.find(c => c.name === "token");
-      if (tokenControls) {
-        tokenControls.tools.push({
-          name: "atmosphera", title: "Atmosphera — AI Music",
-          icon: "fas fa-music", button: true,
-          onClick: () => controller.openPanel()
-        });
-      }
-    } else if (typeof controls === "object") {
-      // v13 alternate: controls may be an object keyed by group name
-      const group = controls.tokens || controls.token;
-      if (group && group.tools) {
-        group.tools.atmosphera = {
-          name: "atmosphera", title: "Atmosphera — AI Music",
-          icon: "fas fa-music", button: true,
-          onChange: () => controller.openPanel()
-        };
-      }
+    const group = controls.sounds;
+    if (group && group.tools) {
+      group.tools.atmosphera = {
+        name: "atmosphera",
+        title: "Atmosphera — AI Music",
+        icon: "fa-solid fa-music",
+        order: Object.keys(group.tools).length,
+        button: true,
+        visible: game.user.isGM,
+        onChange: () => {
+          const existing = foundry.applications.instances?.get("atmosphera-panel");
+          if (existing) existing.close();
+          else controller.openPanel();
+        }
+      };
     }
   });
 
