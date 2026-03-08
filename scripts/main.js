@@ -103,6 +103,17 @@ function registerSettings() {
     scope: "world", config: true, type: String, default: "http://localhost:3100"
   });
 
+  s("sunoModel", {
+    name: "Suno Model Version",
+    hint: "Which Suno AI model to use for generation.",
+    scope: "world", config: true, type: String, default: "chirp-v4",
+    choices: {
+      "chirp-v3-5": "v3.5",
+      "chirp-v4": "v4",
+      "chirp-v4-5": "v4.5 (newest)"
+    }
+  });
+
   s("sunoCookie", {
     name: "Suno Cookie",
     hint: "Your Suno session cookie for authentication.",
@@ -422,7 +433,7 @@ class SunoClient {
   static async generate(prompt, title) {
     const resp = await fetch(`${this._baseUrl()}/api/generate`, {
       method: "POST", headers: this._headers(),
-      body: JSON.stringify({ prompt: "", tags: prompt, title, make_instrumental: true, wait_audio: false })
+      body: JSON.stringify({ prompt: "", tags: prompt, title, make_instrumental: true, wait_audio: false, mv: game.settings.get(MODULE_ID, "sunoModel") })
     });
     if (!resp.ok) throw new Error(`Suno generate failed: ${resp.status}`);
     return resp.json();
