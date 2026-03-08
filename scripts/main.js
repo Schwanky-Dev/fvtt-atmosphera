@@ -1197,6 +1197,8 @@ class AtmospheraController {
     this._queued = null;
     this._lastCategory = null;
     this._preloadStatus = null;
+    this._consecutiveFailures = 0;
+    this._lastFailTime = null;
     this._preloadPromises = new Map();
     this._stingSavedCategory = null;
 
@@ -1241,7 +1243,11 @@ class AtmospheraController {
       if (!this.autoMode) return;
 
       // If we expect to be playing but nothing is playing, re-evaluate
+      // But back off if we keep failing (don't spam a dead API)
       if (this._lastCategory && !FoundryPlaylistManager.isPlaying) {
+        const now = Date.now();
+        const cooldown = this._consecutiveFailures ? Math.min(300000, 30000 * this._consecutiveFailures) : 0;
+        if (this._lastFailTime && (now - this._lastFailTime) < cooldown) return;
         console.log(`${MODULE_ID} | No Atmosphera playlist playing — re-evaluating`);
         this._lastCategory = null;
         this.evaluateAndPlay(true);
@@ -1338,9 +1344,18 @@ class AtmospheraController {
         prompt: prompt
       });
 
+      this._consecutiveFailures = 0;
       if (this.panel) this.panel.render();
     } catch (err) {
-      console.error(`${MODULE_ID} | Generation error:`, err);
+      this._consecutiveFailures = (this._consecutiveFailures || 0) + 1;
+      this._lastFailTime = Date.now();
+      console.error(`${MODULE_ID} | Generation error (failure #${this._consecutiveFailures}):`, err);
+
+      // If API is consistently failing, stop retrying aggressively
+      if (this._consecutiveFailures >= 3) {
+        console.warn(`${MODULE_ID} | ${this._consecutiveFailures} consecutive failures — backing off. Check Suno API proxy.`);
+        ui.notifications.warn(`Atmosphera: API unavailable (${this._consecutiveFailures} failures). Will retry in ${this._consecutiveFailures * 30}s.`);
+      }
 
       // Check if we have pending Suno IDs we can keep polling for
       const pendingIds = err._sunoIds;
