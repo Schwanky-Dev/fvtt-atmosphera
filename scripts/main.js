@@ -1721,26 +1721,56 @@ Hooks.once("ready", () => {
   }
 
   // ── Scene control button (v13) ──
+  // ── Scene control button — try multiple approaches for v13 compat ──
   Hooks.on("getSceneControlButtons", (controls) => {
-    const group = controls.sounds;
-    if (group && group.tools) {
-      group.tools.atmosphera = {
-        name: "atmosphera",
-        title: "Atmosphera — AI Music",
-        icon: "fa-solid fa-music",
-        order: Object.keys(group.tools).length,
-        button: true,
-        visible: game.user.isGM,
-        onChange: () => {
-          const existing = foundry.applications.instances?.get("atmosphera-panel");
-          if (existing) existing.close();
-          else controller.openPanel();
+    try {
+      // v13 object-style
+      if (!Array.isArray(controls)) {
+        const group = controls.sounds || controls.ambient;
+        if (group && group.tools) {
+          group.tools.atmosphera = {
+            name: "atmosphera",
+            title: "Atmosphera — AI Music",
+            icon: "fa-solid fa-music",
+            order: Object.keys(group.tools).length,
+            button: true,
+            visible: game.user.isGM,
+            onChange: () => controller.openPanel()
+          };
         }
-      };
+      } else {
+        // v12 array-style fallback
+        const group = controls.find(c => c.name === "sounds" || c.name === "ambient");
+        if (group) {
+          group.tools.push({
+            name: "atmosphera", title: "Atmosphera — AI Music",
+            icon: "fa-solid fa-music", button: true,
+            onClick: () => controller.openPanel()
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Failed to add scene control button:`, e);
     }
   });
 
-  // ── Fallback: Add chat command to open panel ──
+  // ── Persistent button in the Players/UI area ──
+  Hooks.on("renderPlayerList", (app, html) => {
+    if (!game.user.isGM) return;
+    const existing = html[0]?.querySelector?.("#atmosphera-btn") || html.querySelector?.("#atmosphera-btn");
+    if (existing) return;
+    const btn = document.createElement("button");
+    btn.id = "atmosphera-btn";
+    btn.type = "button";
+    btn.title = "Atmosphera — AI Music";
+    btn.innerHTML = '<i class="fa-solid fa-music"></i> Atmosphera';
+    btn.style.cssText = "width:100%;margin-top:4px;padding:4px 8px;background:var(--color-shadow-primary,#2a1a4e);border:1px solid var(--color-border-light-tertiary,#7a5ba6);border-radius:4px;color:#e0d0ff;cursor:pointer;font-size:12px;";
+    btn.addEventListener("click", () => controller.openPanel());
+    const target = html[0] || html;
+    target.appendChild(btn);
+  });
+
+  // ── Chat command fallback ──
   Hooks.on("chatMessage", (_html, content) => {
     if (content.trim().toLowerCase() === "/atmosphera") {
       controller.openPanel();
