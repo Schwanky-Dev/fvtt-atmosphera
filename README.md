@@ -8,6 +8,49 @@ Atmosphera listens to your game. When combat starts, it generates intense battle
 
 ---
 
+## Quick Start
+
+1. Install the module in Foundry VTT
+2. On your Foundry server, navigate to the module folder:
+   ```
+   cd /path/to/FoundryVTT/Data/modules/atmosphera
+   ```
+3. Copy and edit the environment file:
+   ```
+   cp .env.example .env
+   nano .env  # Add your Suno cookie and optional 2Captcha key
+   ```
+4. Start the proxy:
+   ```
+   docker-compose up -d
+   ```
+5. Enable Atmosphera in your world — the setup wizard will guide you through the rest
+
+---
+
+## Getting Your Suno Cookie
+
+Atmosphera uses the [Suno API proxy](https://github.com/gcui-art/suno-api) to generate music. It needs your Suno session cookie to authenticate:
+
+1. Go to [suno.com/create](https://suno.com/create) and log in
+2. Open your browser's DevTools (F12)
+3. Go to the **Network** tab
+4. Look for a request containing `?__clerk_api_version` in the URL
+5. Click on it and find the **Cookie** header in the request headers
+6. Copy the entire cookie value — paste it into your `.env` file as `SUNO_COOKIE`
+
+> **Note:** Cookies expire periodically. If generation stops working, repeat these steps to get a fresh cookie.
+
+## 2Captcha (Optional but Recommended)
+
+Suno uses hCaptcha to prevent automated access. The Suno API proxy can solve these automatically using [2Captcha](https://2captcha.com):
+
+- **Cost:** ~$3 per 1,000 captcha solves
+- **Setup:** Create an account at [2captcha.com](https://2captcha.com), fund it, and copy your API key into `TWOCAPTCHA_KEY` in your `.env` file
+- Without 2Captcha, you may need to manually solve captchas or your cookie may expire faster
+
+---
+
 ## Features
 
 ### 🤖 Automatic Game State Detection
@@ -72,7 +115,7 @@ https://github.com/Schwanky-Dev/fvtt-atmosphera/releases/latest/download/module.
 ### Configuration
 1. Install the module in Foundry
 2. Enable it in your world's module settings
-3. Set **Suno API URL** (e.g. `http://localhost:3000`)
+3. Set **Suno API URL** (e.g. `http://localhost:3100`)
 4. Set **Suno Cookie** (your session cookie from suno.com)
 5. Optionally set a **2Captcha API Key** if your proxy supports it
 6. Optionally set a **Prompt Style Prefix** (e.g. `"orchestral cinematic"` or `"dark ambient electronic"`)
@@ -171,7 +214,7 @@ Resource depletion shifts the music toward "weary, desperate" tones. At critical
 
 | Setting | Default | Description |
 |---|---|---|
-| Suno API URL | `http://localhost:3000` | Base URL for Suno API proxy |
+| Suno API URL | `http://localhost:3100` | Base URL for Suno API proxy |
 | Suno Cookie | — | Session cookie for authentication |
 | 2Captcha API Key | — | Optional captcha solving |
 | Master Volume | 0.5 | Playback volume (0.0–1.0) |

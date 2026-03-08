@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  suno-proxy:
+    image: gcuiart/suno-api:latest
+    container_name: atmosphera-suno
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      - SUNO_COOKIE=${SUNO_COOKIE}
+      - TWOCAPTCHA_KEY=${TWOCAPTCHA_KEY:-}
+      - BROWSER=chromium
+      - BROWSER_HEADLESS=true
+    volumes:
+      - suno-data:/app/data
+volumes:
+  suno-data:

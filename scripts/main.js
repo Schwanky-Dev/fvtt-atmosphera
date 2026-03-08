@@ -99,8 +99,8 @@ function registerSettings() {
 
   s("sunoApiUrl", {
     name: "Suno API URL",
-    hint: "Base URL for the Suno API proxy (e.g. http://localhost:3000)",
-    scope: "world", config: true, type: String, default: "http://localhost:3000"
+    hint: "Base URL for the Suno API proxy (e.g. http://localhost:3100)",
+    scope: "world", config: true, type: String, default: "http://localhost:3100"
   });
 
   s("sunoCookie", {
@@ -1284,14 +1284,20 @@ class AtmospheraSetupWizard {
   }
 
   static _step2HTML() {
-    const url = game.settings.get(MODULE_ID, "sunoApiUrl") || "http://localhost:3000";
+    const url = game.settings.get(MODULE_ID, "sunoApiUrl") || "http://localhost:3100";
     const cookie = game.settings.get(MODULE_ID, "sunoCookie") || "";
     const captcha = game.settings.get(MODULE_ID, "twoCaptchaKey") || "";
     return `<div class="atmosphera-wizard-content">
       <h2>API Configuration</h2>
+      <div class="atmosphera-wizard-field" style="background:#f0edf5;padding:8px;border-radius:4px;margin-bottom:8px;">
+        <strong>Quick Start:</strong> Run the included Docker proxy on your Foundry server:
+        <pre style="background:#2b2b2b;color:#e0e0e0;padding:6px;border-radius:3px;font-size:11px;overflow-x:auto;margin:4px 0;">cd /path/to/modules/atmosphera && cp .env.example .env && nano .env && docker-compose up -d</pre>
+        Then use <code>http://localhost:3100</code> as the API URL below.<br/>
+        <em style="font-size:11px;">If Foundry runs on a different machine than your browser, use the server's IP address instead of localhost.</em>
+      </div>
       <div class="atmosphera-wizard-field">
         <label>Suno API URL</label>
-        <input type="text" id="atmo-wiz-url" value="${url}" placeholder="http://localhost:3000"/>
+        <input type="text" id="atmo-wiz-url" value="${url}" placeholder="http://localhost:3100"/>
       </div>
       <div class="atmosphera-wizard-field">
         <label>Suno Cookie</label>
@@ -1378,7 +1384,7 @@ class AtmospheraSetupWizard {
   }
 
   static _saveStep2(html) {
-    const url = html.find("#atmo-wiz-url").val()?.trim() || "http://localhost:3000";
+    const url = html.find("#atmo-wiz-url").val()?.trim() || "http://localhost:3100";
     const cookie = html.find("#atmo-wiz-cookie").val()?.trim() || "";
     const captcha = html.find("#atmo-wiz-captcha").val()?.trim() || "";
     game.settings.set(MODULE_ID, "sunoApiUrl", url);
@@ -1437,7 +1443,7 @@ Hooks.once("ready", () => {
   if (!game.settings.get(MODULE_ID, "setupComplete")) {
     const url = game.settings.get(MODULE_ID, "sunoApiUrl");
     const cookie = game.settings.get(MODULE_ID, "sunoCookie");
-    if (!url || url === "http://localhost:3000" || !cookie) {
+    if (!url || url === "http://localhost:3100" || !cookie) {
       AtmospheraSetupWizard.open(controller);
     }
   }
