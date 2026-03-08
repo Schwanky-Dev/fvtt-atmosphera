@@ -1449,15 +1449,36 @@ Hooks.once("ready", () => {
     }
   }
 
-  // ── Scene control button ──
+  // ── Scene control button (v13 compatible) ──
   Hooks.on("getSceneControlButtons", (controls) => {
-    const tokenControls = controls.find(c => c.name === "token");
-    if (tokenControls) {
-      tokenControls.tools.push({
-        name: "atmosphera", title: "Atmosphera — AI Music",
-        icon: "fas fa-music", button: true,
-        onClick: () => controller.openPanel()
-      });
+    // v13: controls is an array of SceneControl objects
+    if (Array.isArray(controls)) {
+      const tokenControls = controls.find(c => c.name === "token");
+      if (tokenControls) {
+        tokenControls.tools.push({
+          name: "atmosphera", title: "Atmosphera — AI Music",
+          icon: "fas fa-music", button: true,
+          onClick: () => controller.openPanel()
+        });
+      }
+    } else if (typeof controls === "object") {
+      // v13 alternate: controls may be an object keyed by group name
+      const group = controls.tokens || controls.token;
+      if (group && group.tools) {
+        group.tools.atmosphera = {
+          name: "atmosphera", title: "Atmosphera — AI Music",
+          icon: "fas fa-music", button: true,
+          onChange: () => controller.openPanel()
+        };
+      }
+    }
+  });
+
+  // ── Fallback: Add chat command to open panel ──
+  Hooks.on("chatMessage", (_html, content) => {
+    if (content.trim().toLowerCase() === "/atmosphera") {
+      controller.openPanel();
+      return false;
     }
   });
 
