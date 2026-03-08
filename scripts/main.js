@@ -1,6 +1,7 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v2.1 — Full audio lifecycle ownership. Enable, configure, forget.
+ * v3.0 — Background pre-generation, fuzzy matching, gap-free playback,
+ *         scene pre-warming, smart combat re-eval, error recovery, clean API.
  */
 
 const MODULE_ID = "atmosphera";
@@ -184,17 +185,19 @@ class GameStateCollector {
 
       const type = actor.system?.details?.type?.value?.toLowerCase() || "unknown";
       const cr = actor.system?.details?.cr ?? 0;
+      const hp = actor.system?.attributes?.hp;
+      const isDead = hp && hp.value <= 0;
       const isBoss = (actor.system?.resources?.legact?.max > 0) || cr >= 10;
 
-      creatures.push({ name: actor.name, type, cr, isBoss });
-      if (isBoss) bosses.push({ name: actor.name, type, cr });
+      creatures.push({ name: actor.name, type, cr, isBoss, isDead });
+      if (isBoss) bosses.push({ name: actor.name, type, cr, isDead });
     }
 
-    const creatureTypes = [...new Set(creatures.map(c => c.type).filter(t => t !== "unknown"))];
-    const crValues = creatures.map(c => c.cr).filter(c => c > 0);
+    const creatureTypes = [...new Set(creatures.filter(c => !c.isDead).map(c => c.type).filter(t => t !== "unknown"))];
+    const crValues = creatures.filter(c => !c.isDead).map(c => c.cr).filter(c => c > 0);
     const crRange = crValues.length ? { min: Math.min(...crValues), max: Math.max(...crValues) } : null;
 
-    return { active: true, round: combat.round || 1, turn: combat.turn || 0, creatures, bosses, hasBoss: bosses.length > 0, creatureTypes, crRange };
+    return { active: true, round: combat.round || 1, turn: combat.turn || 0, creatures, bosses, hasBoss: bosses.some(b => !b.isDead), creatureTypes, crRange };
   }
 
   static _collectParty() {
@@ -276,6 +279,18 @@ class GameStateCollector {
 
     return { name, darkness, weather, keywords, environments: [...environments], active: true };
   }
+
+  /**
+   * Build a combat signature string for smart re-evaluation.
+   * Sorted string of living creature types + boss flag.
+   */
+  static combatSignature() {
+    const combat = this._collectCombat();
+    if (!combat.active) return "";
+    const types = combat.creatureTypes.slice().sort().join(",");
+    const bossFlag = combat.hasBoss ? "|BOSS" : "";
+    return `${types}${bossFlag}`;
+  }
 }
 
 /* ──────────────────────────── PROMPT BUILDER ──────────────────────────── */
@@ -320,7 +335,7 @@ class PromptBuilder {
     const parts = [];
     if (combat.hasBoss) {
       parts.push("epic boss battle music, climactic, orchestral, choir");
-      parts.push(`fighting ${combat.bosses.map(b => b.name).join(" and ")}`);
+      parts.push(`fighting ${combat.bosses.filter(b => !b.isDead).map(b => b.name).join(" and ")}`);
     } else {
       parts.push("intense combat music, battle, percussion, adrenaline");
     }
@@ -444,14 +459,111 @@ class SunoClient {
 class PlaylistCacheManager {
   static PLAYLIST_PREFIX = "Atmosphera";
 
+  /**
+   * Find a cached track — exact match first, then fuzzy keyword matching.
+   */
   static findCached(category) {
+    // Try exact match first
+    const exact = this._findExact(category);
+    if (exact) return exact;
+
+    // Fuzzy match: score all playlists by keyword overlap
+    return this._findFuzzy(category);
+  }
+
+  static _findExact(category) {
     const playlistName = this._playlistName(category);
     const playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist || !playlist.sounds.size) return null;
-
     const sounds = [...playlist.sounds];
     const sound = sounds[Math.floor(Math.random() * sounds.length)];
-    return { playlist, sound, url: sound.path };
+    return { playlist, sound, url: sound.path, category, fuzzy: false };
+  }
+
+  /**
+   * Fuzzy matching: split requested category into keywords, score against
+   * all Atmosphera playlists by keyword overlap.
+   * E.g. "combat-undead-aberration" matches "combat-undead" at 66%.
+   */
+  static _findFuzzy(category) {
+    const requestedKeywords = category.split("-").filter(Boolean);
+    if (requestedKeywords.length === 0) return null;
+
+    const playlists = game.playlists?.filter(p =>
+      p.name.startsWith(this.PLAYLIST_PREFIX) && p.sounds.size > 0
+    ) || [];
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const playlist of playlists) {
+      // Extract category from playlist name: "Atmosphera — Combat (undead)" → "combat-undead"
+      const catFromName = this._categoryFromPlaylistName(playlist.name);
+      if (!catFromName) continue;
+
+      const candidateKeywords = catFromName.split("-").filter(Boolean);
+      const overlap = requestedKeywords.filter(kw => candidateKeywords.includes(kw)).length;
+      const score = overlap / requestedKeywords.length;
+
+      if (score > bestScore) {
+        bestScore = score;
+        const sounds = [...playlist.sounds];
+        const sound = sounds[Math.floor(Math.random() * sounds.length)];
+        bestMatch = { playlist, sound, url: sound.path, category: catFromName, fuzzy: true, score };
+      }
+    }
+
+    // Only accept fuzzy matches > 50%
+    if (bestMatch && bestScore > 0.5) {
+      console.log(`${MODULE_ID} | Fuzzy match: "${category}" → "${bestMatch.category}" (${Math.round(bestScore * 100)}%)`);
+      return bestMatch;
+    }
+
+    return null;
+  }
+
+  /**
+   * Reverse-engineer a category string from a playlist name.
+   * "Atmosphera — Combat (undead)" → "combat-undead"
+   * "Atmosphera — Ambient (tavern)" → "ambient-tavern"
+   * "Atmosphera — Boss (dragon)" → "boss-dragon"
+   */
+  static _categoryFromPlaylistName(name) {
+    const match = name.match(/^Atmosphera\s*—\s*(\w+)\s*(?:\(([^)]+)\))?$/);
+    if (!match) return null;
+    const type = match[1].toLowerCase();
+    const detail = match[2]?.toLowerCase().replace(/\s+/g, "-") || "";
+    return detail ? `${type}-${detail}` : type;
+  }
+
+  /**
+   * Find ANY track to play — used as ultimate fallback.
+   * Prefers the given category, then "calm"/"ambient", then literally anything.
+   */
+  static findAnyTrack(preferredCategory = null) {
+    // Try preferred category (fuzzy)
+    if (preferredCategory) {
+      const found = this.findCached(preferredCategory);
+      if (found) return found;
+    }
+
+    // Try calm/ambient fallbacks
+    for (const fallback of ["ambient-general", "calm", "ambient"]) {
+      const found = this._findExact(fallback) || this._findFuzzy(fallback);
+      if (found) return found;
+    }
+
+    // Last resort: any Atmosphera playlist with sounds
+    const anyPlaylist = game.playlists?.find(p =>
+      p.name.startsWith(this.PLAYLIST_PREFIX) && p.sounds.size > 0
+    );
+    if (anyPlaylist) {
+      const sounds = [...anyPlaylist.sounds];
+      const sound = sounds[Math.floor(Math.random() * sounds.length)];
+      return { playlist: anyPlaylist, sound, url: sound.path, category: "fallback", fuzzy: true };
+    }
+
+    return null;
   }
 
   static async saveTrack(category, track) {
@@ -499,7 +611,7 @@ class PlaylistCacheManager {
   static async getOrGenerate(prompt, title, category, statusCb) {
     const cached = this.findCached(category);
     if (cached) {
-      console.log(`${MODULE_ID} | Playlist cache hit: ${category}`);
+      console.log(`${MODULE_ID} | Playlist cache hit: ${category}${cached.fuzzy ? ` (fuzzy → ${cached.category})` : ""}`);
       statusCb?.("Playing (cached)");
       return cached.url;
     }
@@ -512,10 +624,9 @@ class PlaylistCacheManager {
 
   /**
    * Pre-generate a track in the background. Resolves silently; errors are logged.
-   * Returns a promise that resolves to the file path, or null on failure.
    */
   static async preload(prompt, title, category) {
-    if (this.findCached(category)) return; // Already have it
+    if (this.findCached(category)) return;
     try {
       console.log(`${MODULE_ID} | Preloading: ${category}`);
       const track = await SunoClient.generateAndWait(prompt, title);
@@ -524,6 +635,21 @@ class PlaylistCacheManager {
     } catch (e) {
       console.warn(`${MODULE_ID} | Preload failed for ${category}:`, e);
     }
+  }
+
+  /**
+   * List all cached tracks grouped by category.
+   */
+  static getLibrary() {
+    const library = {};
+    const playlists = game.playlists?.filter(p => p.name.startsWith(this.PLAYLIST_PREFIX)) || [];
+    for (const playlist of playlists) {
+      const cat = this._categoryFromPlaylistName(playlist.name) || playlist.name;
+      library[cat] = [...playlist.sounds].map(s => ({
+        name: s.name, path: s.path, playing: s.playing
+      }));
+    }
+    return library;
   }
 
   static _playlistName(category) {
@@ -544,12 +670,43 @@ class AudioManager {
     this.volume = 0.5;
     this._fadeInterval = null;
     this.currentUrl = null;
+    this._endApproachCallback = null;
+    this._timeUpdateHandler = null;
   }
 
   setVolume(v) {
     this.volume = Math.max(0, Math.min(1, v));
     const active = this.activeDeck === "A" ? this.deckA : this.deckB;
     if (active) active.volume = this.volume;
+  }
+
+  /**
+   * Register a callback for when the current track is nearing its end.
+   * Called when audio.duration - audio.currentTime < thresholdSec.
+   */
+  onEndApproaching(callback, thresholdSec = 15) {
+    this._endApproachCallback = callback;
+    this._endApproachThreshold = thresholdSec;
+  }
+
+  _attachTimeUpdateListener(audio) {
+    if (this._timeUpdateHandler) {
+      // Remove old listener from previous deck
+      const oldDeck = this.activeDeck === "A" ? this.deckB : this.deckA;
+      if (oldDeck) oldDeck.removeEventListener("timeupdate", this._timeUpdateHandler);
+    }
+
+    let fired = false;
+    this._timeUpdateHandler = () => {
+      if (fired) return;
+      if (!audio.duration || !isFinite(audio.duration)) return;
+      const remaining = audio.duration - audio.currentTime;
+      if (remaining < (this._endApproachThreshold || 15) && remaining > 0) {
+        fired = true;
+        if (this._endApproachCallback) this._endApproachCallback();
+      }
+    };
+    audio.addEventListener("timeupdate", this._timeUpdateHandler);
   }
 
   async play(url, crossfadeDuration = 3000) {
@@ -569,6 +726,7 @@ class AudioManager {
       return;
     }
 
+    this._attachTimeUpdateListener(incoming);
     this._crossfade(outgoing, incoming, crossfadeDuration);
   }
 
@@ -768,12 +926,37 @@ class AtmospheraController {
     this._generating = false;
     this._lastCategory = null;
     this._preloadStatus = null;
-    this._preloadPromises = new Map(); // category -> Promise
-    this._stingSavedCategory = null;   // category to revert to after sting
+    this._preloadPromises = new Map();
+    this._stingSavedCategory = null;
+
+    // Feature: background pre-generation for combat stings
+    this._victoryPromise = null;
+    this._defeatPromise = null;
+
+    // Feature: smart combat re-evaluation
+    this._lastCombatSignature = "";
+
+    // Feature: scene pre-warming — track which scenes we've generated for
+    this._prewarmedScenes = new Set();
   }
 
   init() {
     this.audioManager.setVolume(game.settings.get(MODULE_ID, "masterVolume"));
+
+    // Feature: gap-free playback — when track nears end, re-evaluate
+    this.audioManager.onEndApproaching(() => {
+      console.log(`${MODULE_ID} | Track nearing end — re-evaluating`);
+      if (this.autoMode) {
+        // Re-evaluate; if context changed, crossfade to next. If same, loop handles it.
+        const state = GameStateCollector.collect();
+        const { category } = PromptBuilder.build(state, this.manualMood);
+        if (category !== this._lastCategory) {
+          this._lastCategory = null;
+          this.evaluateAndPlay(true);
+        }
+        // If same category, the audio loop=true will handle it seamlessly
+      }
+    }, 15);
   }
 
   openPanel() {
@@ -797,7 +980,6 @@ class AtmospheraController {
 
   /**
    * Core evaluation loop: collect state → build prompt → play if changed.
-   * This is the heartbeat of the entire system.
    */
   evaluateAndPlay(force = false) {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
@@ -809,7 +991,6 @@ class AtmospheraController {
     this.currentCategory = category;
     if (this.panel) this.panel.updatePrompt(prompt);
 
-    // Skip generation if same category is already playing (unless forced)
     if (!force && category === this._lastCategory && this.audioManager.isPlaying) return;
 
     this._lastCategory = category;
@@ -820,6 +1001,19 @@ class AtmospheraController {
   triggerGeneration(customPrompt) {
     const prompt = customPrompt || this.currentPrompt;
     this._doGenerate(prompt, `Atmosphera — Custom`, this.currentCategory || "custom");
+  }
+
+  /**
+   * Generate-only: returns a promise that resolves to the file path.
+   * Used for background pre-generation (no playback).
+   */
+  async _doGenerateOnly(prompt, title, category) {
+    try {
+      return await PlaylistCacheManager.getOrGenerate(prompt, title, category, () => {});
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Background generation failed for ${category}:`, e);
+      return null;
+    }
   }
 
   async _doGenerate(prompt, title, category) {
@@ -840,7 +1034,27 @@ class AtmospheraController {
     } catch (err) {
       console.error(`${MODULE_ID} | Generation error:`, err);
       this._setStatus(`Error: ${err.message}`);
-      ui.notifications.error(`Atmosphera: ${err.message}`);
+
+      // ── ERROR RECOVERY ──
+      // Try to play any existing track from the same category
+      console.log(`${MODULE_ID} | Attempting error recovery…`);
+      const fallback = PlaylistCacheManager.findAnyTrack(category);
+      if (fallback) {
+        console.log(`${MODULE_ID} | Recovery: playing fallback from "${fallback.category}"`);
+        this._setStatus("Playing (fallback)");
+        this.currentTrackInfo = `${fallback.category} (fallback)`;
+        if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
+        try {
+          const crossfade = game.settings.get(MODULE_ID, "crossfadeDuration");
+          await this.audioManager.play(fallback.url, crossfade);
+        } catch (e2) {
+          console.error(`${MODULE_ID} | Fallback playback also failed:`, e2);
+          this._setStatus("Error — no playback available");
+        }
+      } else {
+        ui.notifications.error(`Atmosphera: ${err.message}`);
+        this._setStatus("Error — no tracks available");
+      }
     } finally {
       this._generating = false;
       this._refreshCredits();
@@ -848,13 +1062,33 @@ class AtmospheraController {
   }
 
   /**
+   * Pre-generate victory/defeat stings in background when combat starts.
+   * Stores promises so playSting() can use them instantly if ready.
+   */
+  _pregenerateStings() {
+    const victory = PromptBuilder.buildSting("victory");
+    const defeat = PromptBuilder.buildSting("defeat");
+
+    this._victoryPromise = this._doGenerateOnly(victory.prompt, victory.title, victory.category);
+    this._defeatPromise = this._doGenerateOnly(defeat.prompt, defeat.title, defeat.category);
+
+    // Also update preload status for UI
+    this._preloadStatus = "victory & defeat stings";
+    if (this.panel) this.panel.render();
+
+    Promise.allSettled([this._victoryPromise, this._defeatPromise]).then(() => {
+      this._preloadStatus = null;
+      if (this.panel) this.panel.render();
+    });
+  }
+
+  /**
    * Preload tracks in the background (fire-and-forget).
-   * Used to pre-generate victory/defeat stings when combat starts.
    */
   preload(categories) {
     for (const cat of categories) {
-      if (this._preloadPromises.has(cat)) continue; // Already preloading
-      if (PlaylistCacheManager.findCached(cat)) continue; // Already cached
+      if (this._preloadPromises.has(cat)) continue;
+      if (PlaylistCacheManager.findCached(cat)) continue;
 
       const { prompt, title } = PromptBuilder.buildSting(cat.replace("sting-", ""));
       this._preloadStatus = cat;
@@ -871,19 +1105,47 @@ class AtmospheraController {
     }
   }
 
-  /** Play a victory/defeat sting, then crossfade back to ambient */
+  /**
+   * Play a victory/defeat sting, then crossfade back to ambient.
+   * Uses pre-generated track if the background promise already resolved.
+   */
   async playSting(type) {
     const { prompt, category, title } = PromptBuilder.buildSting(type);
     this.currentPrompt = prompt;
     if (this.panel) this.panel.updatePrompt(prompt);
 
-    // Remember what to revert to
     this._stingSavedCategory = this._lastCategory;
     this._lastCategory = category;
 
-    await this._doGenerate(prompt, title, category);
+    // Check if the pre-generated sting is ready
+    const pregenPromise = type === "victory" ? this._victoryPromise : this._defeatPromise;
+    if (pregenPromise) {
+      try {
+        const pregenUrl = await pregenPromise;
+        if (pregenUrl) {
+          console.log(`${MODULE_ID} | Using pre-generated ${type} sting`);
+          this._setStatus("Playing (pre-generated)");
+          this.currentTrackInfo = category;
+          if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
+          const crossfade = game.settings.get(MODULE_ID, "crossfadeDuration");
+          await this.audioManager.play(pregenUrl, crossfade);
+          if (this.panel) this.panel.render();
 
-    // Revert to ambient after sting plays (~30s)
+          // Revert to ambient after sting
+          this._scheduleStingRevert();
+          return;
+        }
+      } catch {
+        // Pre-gen failed, fall through to normal generation
+      }
+    }
+
+    // Fallback: check cache or generate on the spot
+    await this._doGenerate(prompt, title, category);
+    this._scheduleStingRevert();
+  }
+
+  _scheduleStingRevert() {
     setTimeout(() => {
       if (this.autoMode && !game.combat?.active) {
         this._lastCategory = null;
@@ -892,10 +1154,52 @@ class AtmospheraController {
     }, 30000);
   }
 
+  /**
+   * Pre-warm scene ambient: generate a track for the current scene in background.
+   */
+  prewarmScene(sceneId) {
+    if (this._prewarmedScenes.has(sceneId)) return;
+    this._prewarmedScenes.add(sceneId);
+
+    const state = GameStateCollector.collect();
+    if (state.combat.active) return; // Combat hooks own the music
+
+    const { prompt, title, category } = PromptBuilder.build(state, null);
+
+    // Only prewarm if we don't already have a cached track
+    if (PlaylistCacheManager.findCached(category)) return;
+
+    console.log(`${MODULE_ID} | Pre-warming scene "${state.scene.name}" → ${category}`);
+    this._doGenerateOnly(prompt, title, category);
+  }
+
   stop() {
     this.audioManager.stop();
     this._setStatus("Stopped");
     this._lastCategory = null;
+  }
+
+  /**
+   * Resume auto-detection and play.
+   */
+  play() {
+    this.autoMode = true;
+    this.manualMood = null;
+    this._lastCategory = null;
+    this.evaluateAndPlay(true);
+  }
+
+  /**
+   * Get current status for API consumers.
+   */
+  getStatus() {
+    return {
+      playing: this.audioManager.isPlaying,
+      track: this.currentTrackInfo,
+      mood: this.manualMood || "auto",
+      autoMode: this.autoMode,
+      prompt: this.currentPrompt
+    };
   }
 
   _setStatus(status) {
@@ -916,7 +1220,7 @@ class AtmospheraController {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v2.1`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v3.0`);
 });
 
 Hooks.once("ready", () => {
@@ -925,18 +1229,23 @@ Hooks.once("ready", () => {
   const controller = new AtmospheraController();
   controller.init();
 
-  // ── Expose API ──
+  // ── Expose clean API ──
   const moduleData = game.modules.get(MODULE_ID);
   if (moduleData) {
     moduleData.api = {
+      setMood: (mood) => controller.setMood(mood),
+      stop: () => controller.stop(),
+      play: () => controller.play(),
+      getStatus: () => controller.getStatus(),
+      generate: (prompt) => controller.triggerGeneration(prompt),
+      openPanel: () => controller.openPanel(),
+      getLibrary: () => PlaylistCacheManager.getLibrary(),
+
+      // Power-user / internal access
       controller,
       audioManager: controller.audioManager,
-      setMood: (mood) => controller.setMood(mood),
-      play: (url) => controller.audioManager.play(url),
-      stop: () => controller.stop(),
-      openPanel: () => controller.openPanel(),
-      getCredits: () => SunoClient.getCredits(),
       evaluate: () => controller.evaluateAndPlay(true),
+      getCredits: () => SunoClient.getCredits(),
       CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
     };
   }
@@ -955,11 +1264,9 @@ Hooks.once("ready", () => {
 
   // ════════════════════════════════════════════════════════════════
   //  AUTO-START: Begin playing as soon as the world is ready
-  //  The GM enables the module and forgets about it.
   // ════════════════════════════════════════════════════════════════
 
   if (game.settings.get(MODULE_ID, "enabled")) {
-    // Short delay to let canvas finish initializing
     setTimeout(() => {
       console.log(`${MODULE_ID} | Auto-starting on world ready`);
       controller.evaluateAndPlay(true);
@@ -967,39 +1274,59 @@ Hooks.once("ready", () => {
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  SCENE TRANSITIONS: Crossfade to new ambient on scene change
+  //  SCENE TRANSITIONS + PRE-WARMING
   // ════════════════════════════════════════════════════════════════
 
   Hooks.on("canvasReady", () => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
+
+    const sceneId = canvas?.scene?.id;
+
+    // Pre-warm: if we've never generated for this scene, start background generation
+    if (sceneId && !controller._prewarmedScenes.has(sceneId)) {
+      controller.prewarmScene(sceneId);
+    }
+
     if (!controller.autoMode) return;
-    // If combat is active, combat hooks own the music
     if (game.combat?.active) return;
+
     console.log(`${MODULE_ID} | Scene activated — evaluating ambient`);
-    controller._lastCategory = null; // Force new evaluation
+    controller._lastCategory = null;
     controller.evaluateAndPlay(true);
   });
 
   // ════════════════════════════════════════════════════════════════
-  //  COMBAT LIFECYCLE: Seamless combat ↔ ambient transitions
+  //  COMBAT LIFECYCLE
   // ════════════════════════════════════════════════════════════════
 
   Hooks.on("combatStart", () => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat started — switching to combat music`);
+
+    // Track initial combat signature
+    controller._lastCombatSignature = GameStateCollector.combatSignature();
+
     controller.evaluateAndPlay(true);
 
-    // Preload victory/defeat stings in background so transitions are instant
-    controller.preload(["sting-victory", "sting-defeat"]);
+    // Background pre-generate victory/defeat stings
+    controller._pregenerateStings();
   });
 
   Hooks.on("updateCombat", (combat, changed) => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     if (!("round" in changed)) return;
-    // Re-evaluate each round (new creatures may have appeared, HP changed)
-    controller.evaluateAndPlay();
+
+    // Smart re-evaluation: only regenerate if creature composition actually changed
+    const newSig = GameStateCollector.combatSignature();
+    if (newSig === controller._lastCombatSignature) {
+      console.log(`${MODULE_ID} | Round changed but combat composition unchanged — skipping`);
+      return;
+    }
+    console.log(`${MODULE_ID} | Combat composition changed: "${controller._lastCombatSignature}" → "${newSig}"`);
+    controller._lastCombatSignature = newSig;
+    controller.evaluateAndPlay(true);
   });
 
   Hooks.on("combatEnd", () => {
@@ -1007,6 +1334,7 @@ Hooks.once("ready", () => {
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat ended`);
 
+    controller._lastCombatSignature = "";
     const party = GameStateCollector._collectParty();
     controller.playSting(party.allDown ? "defeat" : "victory");
   });
@@ -1015,6 +1343,7 @@ Hooks.once("ready", () => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat deleted — reverting to ambient`);
+    controller._lastCombatSignature = "";
     controller._lastCategory = null;
     controller.evaluateAndPlay(true);
   });
@@ -1033,16 +1362,23 @@ Hooks.once("ready", () => {
     const resourcesChanged = changed?.system?.resources;
 
     if (hpChanged || spellsChanged || resourcesChanged) {
-      // Debounce: many updates can fire in rapid succession
       clearTimeout(controller._updateActorTimer);
       controller._updateActorTimer = setTimeout(() => {
-        controller.evaluateAndPlay();
+        // Check if combat signature changed (creature died / boss went down)
+        const newSig = GameStateCollector.combatSignature();
+        if (newSig !== controller._lastCombatSignature) {
+          console.log(`${MODULE_ID} | Combat composition changed via actor update`);
+          controller._lastCombatSignature = newSig;
+          controller.evaluateAndPlay(true);
+        } else {
+          controller.evaluateAndPlay();
+        }
       }, 500);
     }
   });
 
   // ════════════════════════════════════════════════════════════════
-  //  PAUSE / UNPAUSE: Stop music when game is paused
+  //  PAUSE / UNPAUSE
   // ════════════════════════════════════════════════════════════════
 
   Hooks.on("pauseGame", (paused) => {
@@ -1059,7 +1395,7 @@ Hooks.once("ready", () => {
   });
 
   // ════════════════════════════════════════════════════════════════
-  //  SETTING CHANGES: React to enabled toggle without reload
+  //  SETTING CHANGES
   // ════════════════════════════════════════════════════════════════
 
   Hooks.on("updateSetting", (setting) => {
@@ -1075,5 +1411,5 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v2.1 ready — music will play automatically.");
+  ui.notifications.info("Atmosphera v3.0 ready — music will play automatically.");
 });
