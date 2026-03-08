@@ -267,7 +267,7 @@ class GameStateCollector {
     if (!scene) return { name: "", darkness: 0, weather: null, keywords: [], environments: [], active: false };
 
     const name = scene.name || "";
-    const darkness = scene.darkness ?? 0;
+    const darkness = scene.environment?.darknessLevel ?? scene.darkness ?? 0;
     const weather = scene.getFlag("core", "weather") || scene.weather || null;
 
     const environments = new Set();
@@ -374,8 +374,9 @@ class PromptBuilder {
     } else {
       parts.push("peaceful ambient background music, gentle exploration");
     }
-    if (scene.darkness > 0.7) parts.push("dark, torchlit, shadows");
-    else if (scene.darkness > 0.4) parts.push("dim, moody lighting");
+    const darknessLevel = scene.environment?.darknessLevel ?? scene.darkness ?? 0;
+    if (darknessLevel > 0.7) parts.push("dark, torchlit, shadows");
+    else if (darknessLevel > 0.4) parts.push("dim, moody lighting");
     if (scene.weather) parts.push(`${scene.weather} weather`);
     for (const env of (scene.environments || []).slice(0, 2)) parts.push(env);
     return parts.join(", ");
