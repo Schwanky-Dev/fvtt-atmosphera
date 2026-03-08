@@ -165,3 +165,170 @@
   color: #668866;
   font-weight: 500;
 }
+
+/* ──── Setup Wizard ──── */
+
+.atmosphera-setup-wizard {
+  background: #1a1a2e !important;
+  border: 1px solid #533483 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7) !important;
+}
+
+.atmosphera-setup-wizard .window-header {
+  background: linear-gradient(135deg, #0f3460, #533483) !important;
+  border-radius: 8px 8px 0 0;
+}
+
+.atmosphera-setup-wizard .window-header .window-title {
+  color: #e0e0e0;
+}
+
+.atmosphera-setup-wizard .dialog-content {
+  background: #1a1a2e !important;
+  color: #c8c8d4;
+  padding: 0 !important;
+}
+
+.atmosphera-setup-wizard .dialog-buttons {
+  background: #151528 !important;
+  border-top: 1px solid #333355;
+  padding: 8px 12px;
+}
+
+.atmosphera-setup-wizard .dialog-buttons button {
+  background: #0f0f23;
+  border: 1px solid #333355;
+  color: #c8c8d4;
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.atmosphera-setup-wizard .dialog-buttons button:hover {
+  background: linear-gradient(135deg, #0f3460, #533483);
+  border-color: #7b5ea7;
+  color: #fff;
+}
+
+.atmosphera-wizard-content {
+  padding: 16px 20px;
+}
+
+.atmosphera-wizard-content h2 {
+  color: #e0e0e0;
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  border-bottom: 1px solid #333355;
+  padding-bottom: 8px;
+}
+
+.atmosphera-wizard-content p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.atmosphera-wizard-content ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.atmosphera-wizard-content a {
+  color: #7b5ea7;
+}
+
+.atmosphera-wizard-content a:hover {
+  color: #a88ed4;
+}
+
+.atmosphera-wizard-field {
+  margin-bottom: 12px;
+}
+
+.atmosphera-wizard-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8888aa;
+  margin-bottom: 4px;
+}
+
+.atmosphera-wizard-field input[type="text"],
+.atmosphera-wizard-field input[type="password"] {
+  width: 100%;
+  background: #0f0f23;
+  border: 1px solid #333355;
+  border-radius: 4px;
+  color: #e0e0e0;
+  padding: 8px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.atmosphera-wizard-field input[type="text"]:focus,
+.atmosphera-wizard-field input[type="password"]:focus {
+  border-color: #533483;
+  outline: none;
+}
+
+.atmosphera-wizard-field input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: #0f0f23;
+  border: 1px solid #333355;
+}
+
+.atmosphera-wizard-field input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #533483, #7b5ea7);
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+}
+
+.atmosphera-wizard-hint {
+  display: block;
+  font-size: 11px;
+  color: #666688;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.atmosphera-wizard-toggle label {
+  text-transform: none;
+  font-size: 13px;
+  color: #c8c8d4;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.atmosphera-wizard-toggle input[type="checkbox"] {
+  accent-color: #533483;
+}
+
+.atmosphera-wizard-btn {
+  background: #0f0f23 !important;
+  border: 1px solid #333355 !important;
+  border-radius: 4px !important;
+  color: #c8c8d4 !important;
+  padding: 6px 14px !important;
+  cursor: pointer !important;
+  font-size: 13px !important;
+  transition: all 0.2s !important;
+}
+
+.atmosphera-wizard-btn:hover {
+  background: linear-gradient(135deg, #0f3460, #533483) !important;
+  border-color: #7b5ea7 !important;
+  color: #fff !important;
+}

@@ -158,6 +158,11 @@ function registerSettings() {
     hint: "Folder name under Data/ for saved Atmosphera tracks.",
     scope: "world", config: true, type: String, default: "atmosphera"
   });
+
+  s("setupComplete", {
+    name: "Setup Complete",
+    scope: "world", config: false, type: Boolean, default: false
+  });
 }
 
 /* ──────────────────────────── GAME STATE COLLECTOR ──────────────────────────── */
@@ -1216,6 +1221,183 @@ class AtmospheraController {
   }
 }
 
+/* ──────────────────────────── SETUP WIZARD ──────────────────────────── */
+
+class AtmospheraSetupWizard {
+  static open(controller) {
+    this._controller = controller;
+    this._step = 1;
+    this._testPassed = false;
+    this._show();
+  }
+
+  static _show() {
+    const step = this._step;
+    const content = this[`_step${step}HTML`]();
+    const buttons = this._buttons(step);
+
+    if (this._dialog) {
+      try { this._dialog.close(); } catch {}
+    }
+
+    this._dialog = new Dialog({
+      title: `Atmosphera Setup (${step}/4)`,
+      content,
+      buttons,
+      default: step < 4 ? "next" : "close",
+      render: (html) => this._onRender(html, step),
+      close: () => {}
+    }, { classes: ["atmosphera-setup-wizard"], width: 480 });
+
+    this._dialog.render(true);
+  }
+
+  static _buttons(step) {
+    if (step === 1) return { next: { label: "Next →", callback: () => { this._step = 2; this._show(); } } };
+    if (step === 2) return {
+      back: { label: "← Back", callback: () => { this._step = 1; this._show(); } },
+      next: { label: "Next →", callback: (html) => { this._saveStep2(html); this._step = 3; this._show(); } }
+    };
+    if (step === 3) return {
+      back: { label: "← Back", callback: () => { this._step = 2; this._show(); } },
+      next: { label: "Finish →", callback: (html) => { this._saveStep3(html); this._step = 4; this._show(); } }
+    };
+    return {
+      panel: { label: "Open Control Panel", callback: () => { game.settings.set(MODULE_ID, "setupComplete", true); this._controller?.openPanel(); } },
+      close: { label: "Close", callback: () => { game.settings.set(MODULE_ID, "setupComplete", true); } }
+    };
+  }
+
+  static _step1HTML() {
+    return `<div class="atmosphera-wizard-content">
+      <h2>Welcome to Atmosphera!</h2>
+      <p>Let's get you set up.</p>
+      <p>Atmosphera generates dynamic background music using <strong>Suno AI</strong>.
+      It reads your game state — scenes, combat, party health — and automatically creates
+      fitting instrumental soundtracks.</p>
+      <p>You'll need:</p>
+      <ul>
+        <li>A running <strong>Suno API proxy</strong> — <a href="https://github.com/SunoAI-API/Suno-API" target="_blank">github.com/SunoAI-API/Suno-API</a></li>
+        <li>Your <strong>Suno session cookie</strong> for authentication</li>
+      </ul>
+    </div>`;
+  }
+
+  static _step2HTML() {
+    const url = game.settings.get(MODULE_ID, "sunoApiUrl") || "http://localhost:3000";
+    const cookie = game.settings.get(MODULE_ID, "sunoCookie") || "";
+    const captcha = game.settings.get(MODULE_ID, "twoCaptchaKey") || "";
+    return `<div class="atmosphera-wizard-content">
+      <h2>API Configuration</h2>
+      <div class="atmosphera-wizard-field">
+        <label>Suno API URL</label>
+        <input type="text" id="atmo-wiz-url" value="${url}" placeholder="http://localhost:3000"/>
+      </div>
+      <div class="atmosphera-wizard-field">
+        <label>Suno Cookie</label>
+        <input type="password" id="atmo-wiz-cookie" value="${cookie}" placeholder="Paste cookie string"/>
+        <span class="atmosphera-wizard-hint">Log into <a href="https://suno.com" target="_blank">suno.com</a>, open DevTools → Application → Cookies → copy the full cookie string.</span>
+      </div>
+      <div class="atmosphera-wizard-field">
+        <label>2Captcha API Key <em>(optional)</em></label>
+        <input type="text" id="atmo-wiz-captcha" value="${captcha}" placeholder="Only if your proxy requires it"/>
+        <span class="atmosphera-wizard-hint">Only needed if your Suno API proxy requires captcha solving.</span>
+      </div>
+      <div class="atmosphera-wizard-field">
+        <button type="button" id="atmo-wiz-test" class="atmosphera-wizard-btn">🔌 Test Connection</button>
+        <span id="atmo-wiz-test-result" class="atmosphera-wizard-hint"></span>
+      </div>
+      ${!this._testPassed ? '<div class="atmosphera-wizard-hint" style="text-align:center;margin-top:4px;"><a href="#" id="atmo-wiz-skip">Skip test and continue anyway</a></div>' : ''}
+    </div>`;
+  }
+
+  static _step3HTML() {
+    const prefix = game.settings.get(MODULE_ID, "promptPrefix") || "";
+    const vol = game.settings.get(MODULE_ID, "masterVolume") ?? 0.5;
+    const autoDetect = game.settings.get(MODULE_ID, "autoDetect");
+    const resourceTracking = game.settings.get(MODULE_ID, "resourceTracking");
+    return `<div class="atmosphera-wizard-content">
+      <h2>Preferences</h2>
+      <div class="atmosphera-wizard-field">
+        <label>Prompt Style Prefix</label>
+        <input type="text" id="atmo-wiz-prefix" value="${prefix}" placeholder='e.g. "orchestral cinematic"'/>
+        <span class="atmosphera-wizard-hint">Examples: "orchestral cinematic", "dark ambient electronic", "celtic folk", "lo-fi chill"</span>
+      </div>
+      <div class="atmosphera-wizard-field">
+        <label>Master Volume: <span id="atmo-wiz-vol-label">${Math.round(vol * 100)}%</span></label>
+        <input type="range" id="atmo-wiz-volume" min="0" max="1" step="0.05" value="${vol}"/>
+      </div>
+      <div class="atmosphera-wizard-field atmosphera-wizard-toggle">
+        <label><input type="checkbox" id="atmo-wiz-autodetect" ${autoDetect ? "checked" : ""}/> Auto-detect combat &amp; game state</label>
+      </div>
+      <div class="atmosphera-wizard-field atmosphera-wizard-toggle">
+        <label><input type="checkbox" id="atmo-wiz-resources" ${resourceTracking ? "checked" : ""}/> Track party resources (spell slots, hit dice)</label>
+      </div>
+    </div>`;
+  }
+
+  static _step4HTML() {
+    return `<div class="atmosphera-wizard-content" style="text-align:center;">
+      <h2>🎵 You're All Set!</h2>
+      <p>Atmosphera will now automatically manage your game's soundtrack based on scenes, combat, and party status.</p>
+      <p style="color:#7b5ea7;">Tip: Click the <i class="fas fa-music"></i> button in the toolbar to open the control panel anytime.</p>
+    </div>`;
+  }
+
+  static _onRender(html, step) {
+    if (step === 2) {
+      html.find("#atmo-wiz-test").on("click", async () => {
+        const urlInput = html.find("#atmo-wiz-url").val().replace(/\/+$/, "");
+        const cookie = html.find("#atmo-wiz-cookie").val();
+        const result = html.find("#atmo-wiz-test-result");
+        result.text("Testing…").css("color", "#aaa");
+        try {
+          const resp = await fetch(`${urlInput}/api/get_limit`, { headers: { "Content-Type": "application/json", Cookie: cookie } });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+          const credits = data.credits_left ?? data.total_credits_left ?? "?";
+          result.text(`✅ Connected! Credits remaining: ${credits}`).css("color", "#6a6");
+          this._testPassed = true;
+        } catch (e) {
+          result.text(`❌ Failed: ${e.message}`).css("color", "#a66");
+          this._testPassed = false;
+        }
+      });
+      html.find("#atmo-wiz-skip").on("click", (e) => {
+        e.preventDefault();
+        this._saveStep2(html);
+        this._step = 3;
+        this._show();
+      });
+    }
+    if (step === 3) {
+      html.find("#atmo-wiz-volume").on("input", function () {
+        html.find("#atmo-wiz-vol-label").text(`${Math.round(this.value * 100)}%`);
+      });
+    }
+  }
+
+  static _saveStep2(html) {
+    const url = html.find("#atmo-wiz-url").val()?.trim() || "http://localhost:3000";
+    const cookie = html.find("#atmo-wiz-cookie").val()?.trim() || "";
+    const captcha = html.find("#atmo-wiz-captcha").val()?.trim() || "";
+    game.settings.set(MODULE_ID, "sunoApiUrl", url);
+    game.settings.set(MODULE_ID, "sunoCookie", cookie);
+    game.settings.set(MODULE_ID, "twoCaptchaKey", captcha);
+  }
+
+  static _saveStep3(html) {
+    const prefix = html.find("#atmo-wiz-prefix").val()?.trim() || "";
+    const vol = parseFloat(html.find("#atmo-wiz-volume").val()) || 0.5;
+    const autoDetect = html.find("#atmo-wiz-autodetect").is(":checked");
+    const resources = html.find("#atmo-wiz-resources").is(":checked");
+    game.settings.set(MODULE_ID, "promptPrefix", prefix);
+    game.settings.set(MODULE_ID, "masterVolume", vol);
+    game.settings.set(MODULE_ID, "autoDetect", autoDetect);
+    game.settings.set(MODULE_ID, "resourceTracking", resources);
+  }
+}
+
 /* ──────────────────────────── HOOKS — FULL LIFECYCLE ──────────────────────────── */
 
 Hooks.once("init", () => {
@@ -1239,6 +1421,7 @@ Hooks.once("ready", () => {
       getStatus: () => controller.getStatus(),
       generate: (prompt) => controller.triggerGeneration(prompt),
       openPanel: () => controller.openPanel(),
+      openSetup: () => AtmospheraSetupWizard.open(controller),
       getLibrary: () => PlaylistCacheManager.getLibrary(),
 
       // Power-user / internal access
@@ -1248,6 +1431,15 @@ Hooks.once("ready", () => {
       getCredits: () => SunoClient.getCredits(),
       CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
     };
+  }
+
+  // ── First-run setup wizard ──
+  if (!game.settings.get(MODULE_ID, "setupComplete")) {
+    const url = game.settings.get(MODULE_ID, "sunoApiUrl");
+    const cookie = game.settings.get(MODULE_ID, "sunoCookie");
+    if (!url || url === "http://localhost:3000" || !cookie) {
+      AtmospheraSetupWizard.open(controller);
+    }
   }
 
   // ── Scene control button ──
