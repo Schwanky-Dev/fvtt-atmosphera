@@ -110,7 +110,8 @@ function registerSettings() {
     choices: {
       "chirp-v3-5": "v3.5",
       "chirp-v4": "v4",
-      "chirp-v4-5": "v4.5 (newest)"
+      "chirp-v4-5": "v4.5",
+      "chirp-crow": "v5 (newest)"
     }
   });
 
@@ -514,9 +515,15 @@ class SunoClient {
         const track = done[0];
         return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration, prompt };
       }
-      if (status.every(s => s.status === "error")) throw new Error("All Suno generations failed");
+      if (status.every(s => s.status === "error")) {
+        const err = new Error("All Suno generations failed");
+        err._sunoIds = ids;
+        throw err;
+      }
     }
-    throw new Error("Suno generation timed out");
+    const err = new Error("Suno generation timed out");
+    err._sunoIds = ids;
+    throw err;
   }
 }
 
@@ -1064,7 +1071,8 @@ class AtmospheraPanel extends Application {
                 <select id="atmo-gen-model" style="width:100%;">
                   <option value="chirp-v3-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v3-5" ? "selected" : ""}>v3.5</option>
                   <option value="chirp-v4" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4" ? "selected" : ""}>v4</option>
-                  <option value="chirp-v4-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4-5" ? "selected" : ""}>v4.5 (newest)</option>
+                  <option value="chirp-v4-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4-5" ? "selected" : ""}>v4.5</option>
+                  <option value="chirp-crow" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-crow" ? "selected" : ""}>v5 (newest)</option>
                 </select>
               </div>
               <div style="margin-bottom:6px;">
@@ -1319,28 +1327,33 @@ class AtmospheraController {
       if (this.panel) this.panel.render();
     } catch (err) {
       console.error(`${MODULE_ID} | Generation error:`, err);
-      this._setStatus(`Error: ${err.message}`);
 
-      // Error recovery
-      console.log(`${MODULE_ID} | Attempting error recovery…`);
+      // Check if we have pending Suno IDs we can keep polling for
+      const pendingIds = err._sunoIds;
+
+      // Play fallback immediately so there's no silence
       const fallback = PlaylistCacheManager.findAnyTrack(category);
       if (fallback) {
-        console.log(`${MODULE_ID} | Recovery: playing fallback from "${fallback.category}"`);
-        this._setStatus("Playing (fallback)");
+        console.log(`${MODULE_ID} | Playing fallback while waiting: "${fallback.category}"`);
+        this._setStatus("Playing fallback — generating in background…");
         this.currentTrackInfo = `${fallback.category} (fallback)`;
         if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
         try {
           const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
           const volume = game.settings.get(MODULE_ID, "masterVolume");
-          await FoundryPlaylistManager.play(fallback.url, fallback.category, {
-            volume,
-            fadeDuration
-          });
+          await FoundryPlaylistManager.play(fallback.url, fallback.category, { volume, fadeDuration });
         } catch (e2) {
           console.error(`${MODULE_ID} | Fallback playback also failed:`, e2);
-          this._setStatus("Error — no playback available");
         }
       } else {
+        this._setStatus(`Generating — please wait…`);
+      }
+
+      // If we have pending IDs, keep polling in background and swap when ready
+      if (pendingIds && pendingIds.length) {
+        console.log(`${MODULE_ID} | Continuing background poll for ${pendingIds.join(",")}`);
+        this._backgroundPoll(pendingIds, prompt, title, category);
+      } else if (!fallback) {
         ui.notifications.error(`Atmosphera: ${err.message}`);
         this._setStatus("Error — no tracks available");
       }
@@ -1355,6 +1368,36 @@ class AtmospheraController {
         this._doGenerate(next.prompt, next.title, next.category);
       }
     }
+  }
+
+  async _backgroundPoll(ids, prompt, title, category) {
+    // Keep trying to poll for completed tracks even after main generation errored
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 10000)); // 10s intervals, more relaxed
+      try {
+        const status = await SunoClient.poll(ids);
+        const done = status.filter(s => s.status === "complete");
+        if (done.length > 0) {
+          const track = done[0];
+          console.log(`${MODULE_ID} | Background poll succeeded! Track ready: ${track.id}`);
+          const url = await PlaylistCacheManager.saveTrack(category, { ...track, url: track.audio_url, prompt });
+          const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
+          const volume = game.settings.get(MODULE_ID, "masterVolume");
+          await FoundryPlaylistManager.play(url, category, { volume, fadeDuration, title, prompt });
+          this._setStatus("Playing");
+          this.currentTrackInfo = category;
+          if (this.panel) this.panel.render();
+          return;
+        }
+        if (status.every(s => s.status === "error")) {
+          console.warn(`${MODULE_ID} | Background poll: all tracks failed`);
+          return;
+        }
+      } catch (e) {
+        console.warn(`${MODULE_ID} | Background poll error (will retry):`, e.message);
+      }
+    }
+    console.warn(`${MODULE_ID} | Background poll timed out after 10 minutes`);
   }
 
   _pregenerateStings() {
