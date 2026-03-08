@@ -445,6 +445,14 @@ class PromptBuilder {
 /* ──────────────────────────── SUNO CLIENT ──────────────────────────── */
 
 class SunoClient {
+  static _queue = Promise.resolve();
+
+  /** Serialize all Suno API calls to prevent rate limiting */
+  static _enqueue(fn) {
+    this._queue = this._queue.then(fn, fn);
+    return this._queue;
+  }
+
   static _baseUrl() {
     return game.settings.get(MODULE_ID, "sunoApiUrl").replace(/\/+$/, "");
   }
@@ -492,7 +500,12 @@ class SunoClient {
     return resp.json();
   }
 
-  static async generateAndWait(prompt, title) {
+  static generateAndWait(prompt, title) {
+    // Serialize through queue so only one generation polls at a time
+    return this._enqueue(() => this._generateAndWaitInner(prompt, title));
+  }
+
+  static async _generateAndWaitInner(prompt, title) {
     console.log(`${MODULE_ID} | Generating: "${title}" — ${prompt}`);
     const genResult = await this.generate(prompt, title);
 
@@ -507,12 +520,13 @@ class SunoClient {
     const ids = genResult.map(r => r.id);
 
     for (let i = 0; i < 120; i++) {
-      await new Promise(r => setTimeout(r, 5000));
-      if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i}/120...`);
+      await new Promise(r => setTimeout(r, 8000)); // 8s between polls to reduce rate limit risk
+      if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i}/120 for ${ids[0]}...`);
       const status = await this.poll(ids);
       const done = status.filter(s => s.status === "complete");
       if (done.length > 0) {
         const track = done[0];
+        console.log(`${MODULE_ID} | Track complete: ${track.id}`);
         return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration, prompt };
       }
       if (status.every(s => s.status === "error")) {
