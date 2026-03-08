@@ -1778,29 +1778,35 @@ Hooks.once("ready", () => {
   }
 
   // ── Create macros on first run ──
-  const macrosCreated = game.settings.get(MODULE_ID, "setupComplete");
-  if (macrosCreated && !game.macros?.find(m => m.name === "🎵 Atmosphera Panel")) {
-    const macros = [
-      { name: "🎵 Atmosphera Panel", command: 'game.modules.get("atmosphera").api.openPanel();', img: "icons/svg/sound.svg" },
-      { name: "🎵 Auto Mode", command: 'game.modules.get("atmosphera").api.setMood("auto"); ui.notifications.info("Atmosphera: Auto mode");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Tension", command: 'game.modules.get("atmosphera").api.setMood("tension");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Calm", command: 'game.modules.get("atmosphera").api.setMood("calm");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Epic", command: 'game.modules.get("atmosphera").api.setMood("epic");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Horror", command: 'game.modules.get("atmosphera").api.setMood("horror");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Mystery", command: 'game.modules.get("atmosphera").api.setMood("mystery");', img: "icons/svg/sound.svg" },
-      { name: "🎵 Stop Music", command: 'game.modules.get("atmosphera").api.stop();', img: "icons/svg/sound.svg" },
-    ];
-    let folder = game.folders?.find(f => f.name === "Atmosphera" && f.type === "Macro");
-    if (!folder) {
-      folder = await Folder.create({ name: "Atmosphera", type: "Macro", color: "#7a5ba6" });
-    }
-    for (const m of macros) {
-      if (!game.macros?.find(e => e.name === m.name)) {
-        await Macro.create({ ...m, type: "script", folder: folder.id });
+  (async () => {
+    try {
+      const setupDone = game.settings.get(MODULE_ID, "setupComplete");
+      if (setupDone && !game.macros?.find(m => m.name === "🎵 Atmosphera Panel")) {
+        const macros = [
+          { name: "🎵 Atmosphera Panel", command: 'game.modules.get("atmosphera").api.openPanel();', img: "icons/svg/sound.svg" },
+          { name: "🎵 Auto Mode", command: 'game.modules.get("atmosphera").api.setMood("auto"); ui.notifications.info("Atmosphera: Auto mode");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Tension", command: 'game.modules.get("atmosphera").api.setMood("tension");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Calm", command: 'game.modules.get("atmosphera").api.setMood("calm");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Epic", command: 'game.modules.get("atmosphera").api.setMood("epic");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Horror", command: 'game.modules.get("atmosphera").api.setMood("horror");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Mystery", command: 'game.modules.get("atmosphera").api.setMood("mystery");', img: "icons/svg/sound.svg" },
+          { name: "🎵 Stop Music", command: 'game.modules.get("atmosphera").api.stop();', img: "icons/svg/sound.svg" },
+        ];
+        let folder = game.folders?.find(f => f.name === "Atmosphera" && f.type === "Macro");
+        if (!folder) {
+          folder = await Folder.create({ name: "Atmosphera", type: "Macro", color: "#7a5ba6" });
+        }
+        for (const m of macros) {
+          if (!game.macros?.find(e => e.name === m.name)) {
+            await Macro.create({ ...m, type: "script", folder: folder.id });
+          }
+        }
+        console.log(`${MODULE_ID} | Created ${macros.length} hotbar macros in Atmosphera folder`);
       }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Failed to create macros:`, e);
     }
-    console.log(`${MODULE_ID} | Created ${macros.length} hotbar macros in Atmosphera folder`);
-  }
+  })();
 
   // ── Scene control button (v13) ──
   // ── Scene control button — try multiple approaches for v13 compat ──
