@@ -475,9 +475,18 @@ class SunoClient {
 
   static async poll(ids) {
     const query = Array.isArray(ids) ? ids.join(",") : ids;
-    const resp = await fetch(`${this._baseUrl()}/api/get?ids=${query}`, { headers: this._headers() });
-    if (!resp.ok) throw new Error(`Suno poll failed: ${resp.status}`);
-    return resp.json();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resp = await fetch(`${this._baseUrl()}/api/get?ids=${query}`, { headers: this._headers() });
+      if (resp.ok) return resp.json();
+      if (resp.status === 500 || resp.status === 429) {
+        const wait = (attempt + 1) * 15000;
+        console.warn(`${MODULE_ID} | Poll got ${resp.status}, retrying in ${wait/1000}s (attempt ${attempt + 1}/3)`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw new Error(`Suno poll failed: ${resp.status}`);
+    }
+    throw new Error("Suno poll failed after 3 retries");
   }
 
   static async getCredits() {
@@ -1187,8 +1196,10 @@ class AtmospheraController {
     const victory = PromptBuilder.buildSting("victory");
     const defeat = PromptBuilder.buildSting("defeat");
 
+    // Stagger requests to avoid rate limiting — wait 10s between each
     this._victoryPromise = this._doGenerateOnly(victory.prompt, victory.title, victory.category);
-    this._defeatPromise = this._doGenerateOnly(defeat.prompt, defeat.title, defeat.category);
+    this._defeatPromise = new Promise(r => setTimeout(r, 10000))
+      .then(() => this._doGenerateOnly(defeat.prompt, defeat.title, defeat.category));
 
     // Also update preload status for UI
     this._preloadStatus = "victory & defeat stings";
