@@ -881,7 +881,9 @@ class PlaylistCacheManager {
 
   static async saveTrack(category, track) {
     const folder = game.settings.get(MODULE_ID, "audioFolder") || "atmosphera";
-    const subFolder = category.replace(/[^a-z0-9-]/gi, "-");
+    // Extract top-level type: "combat-undead-aberration" → "combat", "sting-victory" → "stings"
+    const topType = category.split("-")[0] || "misc";
+    const subFolder = topType === "sting" ? "stings" : topType;
     const dirPath = `${folder}/${subFolder}`;
 
     try { await FilePicker.browse("data", dirPath); } catch {
