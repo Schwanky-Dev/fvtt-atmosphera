@@ -1644,9 +1644,14 @@ class AtmospheraSetupWizard {
         <input type="text" id="atmo-wiz-url" value="${url}" placeholder="http://localhost:3100"/>
       </div>
       <div class="atmosphera-wizard-field">
-        <label>Suno Cookie</label>
-        <input type="password" id="atmo-wiz-cookie" value="${cookie}" placeholder="Paste cookie string"/>
-        <span class="atmosphera-wizard-hint">Log into <a href="https://suno.com" target="_blank">suno.com</a>, open DevTools → Application → Cookies → copy the full cookie string.</span>
+        <label>Suno Authentication</label>
+        <button type="button" id="atmo-wiz-auth" class="atmosphera-wizard-btn" style="margin-bottom:4px;">🔑 Sign In to Suno</button>
+        <span id="atmo-wiz-auth-status" class="atmosphera-wizard-hint">Click to open the authentication page on your proxy server.</span>
+        <details style="margin-top:4px;">
+          <summary style="cursor:pointer;font-size:11px;color:#888;">Advanced: Manual cookie paste</summary>
+          <input type="password" id="atmo-wiz-cookie" value="${cookie}" placeholder="__client=eyJ..." style="margin-top:4px;"/>
+          <span class="atmosphera-wizard-hint">Paste the <code>__client</code> cookie value from suno.com DevTools.</span>
+        </details>
       </div>
       <div class="atmosphera-wizard-field">
         <label>2Captcha API Key <em>(optional)</em></label>
@@ -1697,6 +1702,28 @@ class AtmospheraSetupWizard {
 
   static _onRender(html, step) {
     if (step === 2) {
+      html.find("#atmo-wiz-auth").on("click", () => {
+        const urlInput = html.find("#atmo-wiz-url").val().replace(/\/+$/, "");
+        if (!urlInput) { ui.notifications.warn("Enter the Suno API URL first."); return; }
+        window.open(`${urlInput}/auth`, "_blank");
+        const statusEl = html.find("#atmo-wiz-auth-status");
+        statusEl.text("Checking auth status…").css("color", "#aaa");
+        // Poll for auth completion
+        let polls = 0;
+        const pollInterval = setInterval(async () => {
+          polls++;
+          if (polls > 150) { clearInterval(pollInterval); statusEl.text("⏰ Timed out. Try again or use manual paste.").css("color", "#a66"); return; }
+          try {
+            const resp = await fetch(`${urlInput}/api/auth/status`);
+            const data = await resp.json();
+            if (data.authenticated) {
+              clearInterval(pollInterval);
+              statusEl.text(`✅ Authenticated! Expires: ${data.expiresAt || "unknown"}`).css("color", "#6a6");
+              this._testPassed = true;
+            }
+          } catch {}
+        }, 2000);
+      });
       html.find("#atmo-wiz-test").on("click", async () => {
         const urlInput = html.find("#atmo-wiz-url").val().replace(/\/+$/, "");
         const cookie = html.find("#atmo-wiz-cookie").val();
