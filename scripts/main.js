@@ -1,7 +1,7 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v3.0 — Background pre-generation, fuzzy matching, gap-free playback,
- *         scene pre-warming, smart combat re-eval, error recovery, clean API.
+ * v0.1.7 — Generation queue, custom_generate endpoint, instrumental/negative tags,
+ *           extended polling, wait_audio support, GM panel generation settings.
  */
 
 const MODULE_ID = "atmosphera";
@@ -112,6 +112,30 @@ function registerSettings() {
       "chirp-v4": "v4",
       "chirp-v4-5": "v4.5 (newest)"
     }
+  });
+
+  s("instrumental", {
+    name: "Instrumental",
+    hint: "Generate instrumental tracks (no vocals).",
+    scope: "world", config: true, type: Boolean, default: true
+  });
+
+  s("negativeTags", {
+    name: "Negative Tags",
+    hint: "Styles/elements to avoid in generated music. Comma-separated.",
+    scope: "world", config: true, type: String, default: "vocals, singing, voice"
+  });
+
+  s("waitAudio", {
+    name: "Wait for Audio",
+    hint: "Wait for Suno to fully generate before returning (slower but more reliable). Enable if tracks aren't completing.",
+    scope: "world", config: true, type: Boolean, default: false
+  });
+
+  s("titlePrefix", {
+    name: "Title Prefix",
+    hint: "Prefix for generated track titles.",
+    scope: "world", config: true, type: String, default: "Atmosphera"
   });
 
   s("sunoCookie", {
@@ -400,7 +424,8 @@ class PromptBuilder {
   }
 
   static _buildTitle(combat, scene) {
-    const parts = ["Atmosphera"];
+    const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
+    const parts = [prefix];
     if (combat.active) {
       parts.push(combat.hasBoss ? "Boss Battle" : "Combat");
       if (combat.creatureTypes[0]) parts.push(`(${combat.creatureTypes[0]})`);
@@ -411,9 +436,10 @@ class PromptBuilder {
   }
 
   static buildSting(type) {
+    const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
     const stings = {
-      victory: { prompt: "instrumental, triumphant victory fanfare, celebratory, brass, short", category: "sting-victory", title: "Atmosphera — Victory" },
-      defeat: { prompt: "instrumental, somber defeat, loss, mournful strings, fading hope, short", category: "sting-defeat", title: "Atmosphera — Defeat" }
+      victory: { prompt: "instrumental, triumphant victory fanfare, celebratory, brass, short", category: "sting-victory", title: `${prefix} — Victory` },
+      defeat: { prompt: "instrumental, somber defeat, loss, mournful strings, fading hope, short", category: "sting-defeat", title: `${prefix} — Defeat` }
     };
     return stings[type] || stings.victory;
   }
@@ -431,9 +457,17 @@ class SunoClient {
   }
 
   static async generate(prompt, title) {
-    const resp = await fetch(`${this._baseUrl()}/api/generate`, {
+    const resp = await fetch(`${this._baseUrl()}/api/custom_generate`, {
       method: "POST", headers: this._headers(),
-      body: JSON.stringify({ prompt: "", tags: prompt, title, make_instrumental: true, wait_audio: false, mv: game.settings.get(MODULE_ID, "sunoModel") })
+      body: JSON.stringify({
+        prompt: game.settings.get(MODULE_ID, "instrumental") ? "" : prompt,
+        tags: prompt,
+        title: title,
+        make_instrumental: game.settings.get(MODULE_ID, "instrumental"),
+        model: game.settings.get(MODULE_ID, "sunoModel"),
+        wait_audio: game.settings.get(MODULE_ID, "waitAudio"),
+        negative_tags: game.settings.get(MODULE_ID, "negativeTags") || undefined
+      })
     });
     if (!resp.ok) throw new Error(`Suno generate failed: ${resp.status}`);
     return resp.json();
@@ -455,10 +489,21 @@ class SunoClient {
   static async generateAndWait(prompt, title) {
     console.log(`${MODULE_ID} | Generating: "${title}" — ${prompt}`);
     const genResult = await this.generate(prompt, title);
+
+    // If wait_audio was true, the response may already contain completed tracks
+    if (Array.isArray(genResult)) {
+      const alreadyDone = genResult.find(r => r.status === "complete" && r.audio_url);
+      if (alreadyDone) {
+        console.log(`${MODULE_ID} | wait_audio returned completed track immediately`);
+        return { id: alreadyDone.id, url: alreadyDone.audio_url, title: alreadyDone.title, tags: alreadyDone.metadata?.tags || prompt, duration: alreadyDone.metadata?.duration, prompt };
+      }
+    }
+
     const ids = genResult.map(r => r.id);
 
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 120; i++) {
       await new Promise(r => setTimeout(r, 5000));
+      if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i}/120...`);
       const status = await this.poll(ids);
       const done = status.filter(s => s.status === "complete");
       if (done.length > 0) {
@@ -862,6 +907,31 @@ class AtmospheraPanel extends Application {
           <input type="range" id="atmo-volume" min="0" max="1" step="0.05" value="${game.settings.get(MODULE_ID, "masterVolume")}">
         </div>
 
+        <div class="atmo-section">
+          <details>
+            <summary style="cursor:pointer;font-weight:bold;font-size:12px;">⚙ Generation Settings</summary>
+            <div style="margin-top:6px;">
+              <div style="margin-bottom:6px;">
+                <label style="font-size:11px;">Model Version</label>
+                <select id="atmo-gen-model" style="width:100%;">
+                  <option value="chirp-v3-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v3-5" ? "selected" : ""}>v3.5</option>
+                  <option value="chirp-v4" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4" ? "selected" : ""}>v4</option>
+                  <option value="chirp-v4-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4-5" ? "selected" : ""}>v4.5 (newest)</option>
+                </select>
+              </div>
+              <div style="margin-bottom:6px;">
+                <label style="font-size:11px;">
+                  <input type="checkbox" id="atmo-gen-instrumental" ${game.settings.get(MODULE_ID, "instrumental") ? "checked" : ""}/> Instrumental (no vocals)
+                </label>
+              </div>
+              <div style="margin-bottom:6px;">
+                <label style="font-size:11px;">Negative Tags</label>
+                <input type="text" id="atmo-gen-negative-tags" value="${game.settings.get(MODULE_ID, "negativeTags")}" style="width:100%;font-size:11px;" placeholder="vocals, singing, voice"/>
+              </div>
+            </div>
+          </details>
+        </div>
+
         <div class="atmo-section atmo-status">
           <div id="atmo-gen-status">${c.generationStatus || "Idle"}</div>
           <div id="atmo-credits">Credits: ${c.credits ?? "—"}</div>
@@ -905,6 +975,18 @@ class AtmospheraPanel extends Application {
       game.settings.set(MODULE_ID, "masterVolume", v);
     });
 
+    html.find("#atmo-gen-model").on("change", (e) => {
+      game.settings.set(MODULE_ID, "sunoModel", e.target.value);
+    });
+
+    html.find("#atmo-gen-instrumental").on("change", (e) => {
+      game.settings.set(MODULE_ID, "instrumental", e.target.checked);
+    });
+
+    html.find("#atmo-gen-negative-tags").on("change", (e) => {
+      game.settings.set(MODULE_ID, "negativeTags", e.target.value);
+    });
+
     return html;
   }
 
@@ -943,6 +1025,8 @@ class AtmospheraController {
     this.credits = null;
     this.currentTrackInfo = "";
     this._generating = false;
+    this._queued = null;
+    this._generatingPreload = false;
     this._lastCategory = null;
     this._preloadStatus = null;
     this._preloadPromises = new Map();
@@ -1019,12 +1103,14 @@ class AtmospheraController {
   /** Trigger generation with a specific prompt string (from panel edit) */
   triggerGeneration(customPrompt) {
     const prompt = customPrompt || this.currentPrompt;
-    this._doGenerate(prompt, `Atmosphera — Custom`, this.currentCategory || "custom");
+    const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
+    this._doGenerate(prompt, `${prefix} — Custom`, this.currentCategory || "custom");
   }
 
   /**
    * Generate-only: returns a promise that resolves to the file path.
    * Used for background pre-generation (no playback).
+   * Has its own tracking flag so it does NOT block the main generation pipeline.
    */
   async _doGenerateOnly(prompt, title, category) {
     try {
@@ -1036,8 +1122,14 @@ class AtmospheraController {
   }
 
   async _doGenerate(prompt, title, category) {
-    if (this._generating) return;
+    if (this._generating) {
+      // Queue this request, replacing any previous queued request
+      this._queued = { prompt, title, category };
+      console.log(`${MODULE_ID} | Generation in progress, queued: ${category}`);
+      return;
+    }
     this._generating = true;
+    this._setStatus("Generating…");
 
     try {
       const url = await PlaylistCacheManager.getOrGenerate(prompt, title, category, (s) => this._setStatus(s));
@@ -1055,7 +1147,6 @@ class AtmospheraController {
       this._setStatus(`Error: ${err.message}`);
 
       // ── ERROR RECOVERY ──
-      // Try to play any existing track from the same category
       console.log(`${MODULE_ID} | Attempting error recovery…`);
       const fallback = PlaylistCacheManager.findAnyTrack(category);
       if (fallback) {
@@ -1077,6 +1168,14 @@ class AtmospheraController {
     } finally {
       this._generating = false;
       this._refreshCredits();
+
+      // Process queued request if any
+      if (this._queued) {
+        const next = this._queued;
+        this._queued = null;
+        console.log(`${MODULE_ID} | Processing queued generation: ${next.category}`);
+        this._doGenerate(next.prompt, next.title, next.category);
+      }
     }
   }
 
@@ -1422,7 +1521,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v3.0`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.1.7`);
 });
 
 Hooks.once("ready", () => {
@@ -1639,5 +1738,5 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v3.0 ready — music will play automatically.");
+  ui.notifications.info("Atmosphera v0.1.7 ready — music will play automatically.");
 });
