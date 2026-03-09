@@ -199,6 +199,25 @@ function registerSettings() {
     name: "Setup Complete",
     scope: "world", config: false, type: Boolean, default: false
   });
+
+  s("reauth", {
+    name: "Re-authenticate Suno",
+    hint: "Click here to re-open the Suno authentication wizard. You can also use the /atmosphera auth chat command.",
+    scope: "world", config: true, type: Boolean, default: false,
+    onChange: () => {
+      // Reset back to false immediately — this is a button, not a toggle
+      game.settings.set(MODULE_ID, "reauth", false);
+      // Open step 2 (auth) of the wizard
+      const mod = game.modules.get(MODULE_ID);
+      if (mod?.api?.openSetup) {
+        mod.api.openSetup();
+      } else {
+        // Fallback: open the Suno auth URL directly
+        const url = game.settings.get(MODULE_ID, "sunoApiUrl")?.replace(/\/+$/, "");
+        if (url) window.open(`${url}/auth`, "_blank");
+      }
+    }
+  });
 }
 
 /* ──────────────────────────── GAME STATE COLLECTOR ──────────────────────────── */
@@ -1900,10 +1919,15 @@ Hooks.once("ready", () => {
     target.appendChild(btn);
   });
 
-  // ── Chat command fallback ──
+  // ── Chat commands ──
   Hooks.on("chatMessage", (_html, content) => {
-    if (content.trim().toLowerCase() === "/atmosphera") {
+    const cmd = content.trim().toLowerCase();
+    if (cmd === "/atmosphera") {
       controller.openPanel();
+      return false;
+    }
+    if (cmd === "/atmosphera auth" || cmd === "/atmosphera setup") {
+      AtmospheraSetupWizard.open(controller);
       return false;
     }
   });
