@@ -1650,6 +1650,10 @@ class AtmospheraController {
       }
     } finally {
       this._generating = false;
+      // Ensure lock releases even on error (with short grace period)
+      if (this._playbackLock) {
+        setTimeout(() => { this._playbackLock = false; }, 3000);
+      }
       this._refreshCredits();
 
       if (this._queued) {
