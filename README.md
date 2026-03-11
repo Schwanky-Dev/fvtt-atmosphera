@@ -1,53 +1,32 @@
 # 🎵 Atmosphera
 
-**AI-powered dynamic atmosphere music for Foundry VTT** — powered by [Suno AI](https://suno.ai).
+**AI-powered dynamic soundtrack for Foundry VTT** — powered by [Udio](https://udio.com) via [PiAPI](https://piapi.ai).
 
-Atmosphera listens to your game. When combat starts, it generates intense battle music tailored to the creatures you're fighting. When you move to a new scene, it creates ambient tracks that match the environment. When the party is bloodied and out of spell slots, the music shifts to reflect their desperation. Enable it, configure your Suno credentials, and forget about it.
+Atmosphera listens to your game and generates music that matches what's happening. Combat starts — battle music plays. A monster dies — the intensity shifts. You enter a dark dungeon — ambient dread fills the room. Configure your API key, enable it, and the music handles itself.
 
-> **v3.0** — Background pre-generation · Fuzzy library matching · Gap-free playback · Scene pre-warming · Smart combat re-eval · Error recovery · Clean macro API
+> **v0.4.3** — Adaptive cooldown · Combat-aware signatures · Consolidated playlists · Scene variety · ApplicationV2
 
 ---
 
 ## Quick Start
 
-1. Install the module in Foundry VTT
-2. On your Foundry server, navigate to the module folder:
-   ```
-   cd /path/to/FoundryVTT/Data/modules/atmosphera
-   ```
-3. Copy and edit the environment file:
-   ```
-   cp .env.example .env
-   nano .env  # Add your Suno cookie and optional 2Captcha key
-   ```
-4. Start the proxy:
-   ```
-   docker-compose up -d
-   ```
-5. Enable Atmosphera in your world — the setup wizard will guide you through the rest
+1. Install the module in Foundry VTT (manifest URL below)
+2. Enable it in your world
+3. The setup wizard will prompt you for your **PiAPI API key**
+4. Done — Atmosphera starts generating music automatically
 
 ---
 
-## Getting Your Suno Cookie
+## Getting a PiAPI API Key
 
-Atmosphera uses the [Suno API proxy](https://github.com/gcui-art/suno-api) to generate music. It needs your Suno session cookie to authenticate:
+Atmosphera generates music through [PiAPI](https://piapi.ai), which provides access to Udio's music generation:
 
-1. Go to [suno.com/create](https://suno.com/create) and log in
-2. Open your browser's DevTools (F12)
-3. Go to the **Network** tab
-4. Look for a request containing `?__clerk_api_version` in the URL
-5. Click on it and find the **Cookie** header in the request headers
-6. Copy the entire cookie value — paste it into your `.env` file as `SUNO_COOKIE`
+1. Create an account at [piapi.ai](https://piapi.ai)
+2. Add credits (each song generation costs ~500K credits)
+3. Copy your API key from the dashboard
+4. Paste it into the Atmosphera setup wizard or module settings
 
-> **Note:** Cookies expire periodically. If generation stops working, repeat these steps to get a fresh cookie.
-
-## 2Captcha (Optional but Recommended)
-
-Suno uses hCaptcha to prevent automated access. The Suno API proxy can solve these automatically using [2Captcha](https://2captcha.com):
-
-- **Cost:** ~$3 per 1,000 captcha solves
-- **Setup:** Create an account at [2captcha.com](https://2captcha.com), fund it, and copy your API key into `TWOCAPTCHA_KEY` in your `.env` file
-- Without 2Captcha, you may need to manually solve captchas or your cookie may expire faster
+No Docker, no cookies, no captcha solving — just an API key.
 
 ---
 
@@ -55,94 +34,92 @@ Suno uses hCaptcha to prevent automated access. The Suno API proxy can solve the
 
 ### 🤖 Automatic Game State Detection
 Atmosphera reads your game in real time:
-- **Combat** — creature types, CR, boss detection (legendary actions / CR ≥ 10)
-- **Party health** — HP percentage across all PCs, "bloodied" and "critical" thresholds
+- **Combat** — creature types, CR, alive enemy count, boss detection (legendary actions / CR ≥ 10)
+- **Party health** — HP percentage across all PCs, "bloodied" (40%) and "critical" thresholds
 - **Party resources** — spell slots, hit dice, class resources (optional)
 - **Scene** — name keywords, darkness level, weather, token environments
-- All of this feeds into a dynamic prompt sent to Suno to generate perfectly-fitted music
+- All of this feeds into a natural language prompt sent to Udio for perfectly-fitted music
 
 ### ⚔️ Combat Lifecycle
 1. **Combat starts** → generates combat music based on creature types and CR
-2. **Pre-generates** victory and defeat stings in the background (fire-and-forget)
-3. **Round changes** → only regenerates if creature composition actually changed (new types entered, boss died)
-4. **Combat ends** → instantly plays pre-generated victory/defeat sting, then crossfades back to ambient
+2. **Monster dies** → signature changes, music re-evaluates (more desperate, or triumphant)
+3. **Boss dies** → immediate re-evaluation for dramatic shift
+4. **Round changes** → only regenerates if enemy composition actually changed
+5. **Combat ends** → plays victory/defeat sting, crossfades back to ambient
 
 ### 🎭 Scene Transitions
 - Moving to a new scene crossfades to new ambient music
-- **Scene pre-warming**: on `canvasReady`, if we've never generated for this scene, background generation starts immediately — no waiting for the GM
+- **Scene pre-warming**: generates background music on `canvasReady` — no waiting
+- **Default scenes** (e.g., "Foundry Virtual Tabletop") generate once then always use cache
+- **Scene variety timer**: after extended time in one scene, generates fresh music
 
 ### 📚 Smart Playlist Library
-Every generated track is saved to a Foundry playlist organized by category. The library grows over time and becomes more useful:
-- **Exact matching** — `combat-undead` checks the "Combat (undead)" playlist first
-- **Fuzzy matching** — `combat-undead-aberration` finds `combat-undead` as a partial match (67% keyword overlap)
-- Partial matches accepted at >50% score, so a track from last session works for similar encounters
-- Tracks are saved as MP3 files in your configured data folder
+Every generated track is saved to organized Foundry playlists. The library grows over time:
+- **Playlist folders**: Ambient, Combat, Boss, and Stings playlists under an "🎵 Atmosphera" folder
+- **Fuzzy matching** — `combat-undead-aberration` finds `combat-undead` as a partial match
+- Partial matches accepted at >50% score, so tracks from last session work for similar encounters
 
-### 🔄 Gap-Free Playback
-When a track is within 15 seconds of ending, Atmosphera re-evaluates the game state:
-- If context is the same → the track loops seamlessly (HTML5 Audio `loop=true`)
-- If context changed → crossfades to the next appropriate track
+### ⏱️ Adaptive Cooldown
+Unlike a flat timer, Atmosphera uses smart cooldown:
+- **Normal transitions generate immediately** — scene change, combat start, mood switch
+- **Rapid switching gets throttled** — 3+ generation requests in 60 seconds activates escalating cooldown
+- Single scene changes are never blocked; only credit-wasting spam is prevented
+- Max cooldown configurable (default 180s)
 
 ### 🛡️ Error Recovery
-If Suno generation fails, Atmosphera **never leaves silence**:
+If generation fails, Atmosphera **never leaves silence**:
 1. Try playing any existing track from the same category (fuzzy match)
-2. If nothing in that category, try "calm" / "ambient" fallbacks
-3. If the library is completely empty, report the error (but at least we tried)
+2. If nothing in that category, try fallback categories
+3. Exponential backoff on consecutive failures
 
 ### 🎛️ GM Control Panel
-Click the 🎵 button in the token controls toolbar to open the panel:
-- **Enable/Disable** — master switch
-- **Auto/Manual** toggle — auto reads game state, manual lets you pick a mood
+Open via the macro or scene controls:
+- **Enable/Disable** toggle
+- **Auto/Manual** mode — auto reads game state, manual lets you pick a mood
 - **Mood presets** — tension, calm, mystery, horror, triumph, sorrow, wonder, chase, stealth, epic
-- **Prompt editor** — see and edit the generated prompt before sending
-- **Volume slider** — with crossfade support
-- **Status display** — generation progress, credits remaining, current track info
+- **Volume control** with crossfade
+- **Status display** — generation progress, credits remaining, cooldown timer, current track
 
 ---
 
 ## Installation
 
-### Module JSON URL
+### Manifest URL
 ```
 https://github.com/Schwanky-Dev/fvtt-atmosphera/releases/latest/download/module.json
 ```
 
 ### Requirements
-- **Foundry VTT v12+**
-- **Suno API proxy** — such as [Suno API](https://github.com/SunoAI-API/Suno-API) running locally or on a server
-- **Suno account** with credits (free tier works, pro recommended for longer sessions)
+- **Foundry VTT v12+** (verified on v13)
+- **PiAPI account** with credits ([piapi.ai](https://piapi.ai))
 
 ### Configuration
-1. Install the module in Foundry
-2. Enable it in your world's module settings
-3. Set **Suno API URL** (e.g. `http://localhost:3100`)
-4. Set **Suno Cookie** (your session cookie from suno.com)
-5. Optionally set a **2Captcha API Key** if your proxy supports it
-6. Optionally set a **Prompt Style Prefix** (e.g. `"orchestral cinematic"` or `"dark ambient electronic"`)
+1. Install and enable the module
+2. The setup wizard runs automatically on first load
+3. Enter your PiAPI API key
+4. Optionally set a **Prompt Style Prefix** (e.g., `"orchestral cinematic"` or `"dark ambient electronic"`)
+5. Adjust volume, crossfade duration, and other settings as desired
 
 ---
 
 ## Macro API
 
-Access the API from macros or the console:
-
 ```js
 const atmo = game.modules.get("atmosphera").api;
 ```
 
-### Available Methods
-
 | Method | Description |
 |---|---|
-| `atmo.setMood("tension")` | Manual override — sets mood to any preset or custom string |
-| `atmo.setMood("auto")` | Release override, return to auto-detection |
+| `atmo.setMood("tension")` | Manual mood override |
+| `atmo.setMood("auto")` | Return to auto-detection |
 | `atmo.stop()` | Stop all playback |
-| `atmo.play()` | Resume auto-detection and start playing |
+| `atmo.play()` | Resume auto-detection |
 | `atmo.getStatus()` | Returns `{playing, track, mood, autoMode, prompt}` |
-| `atmo.generate("epic boss choir")` | Force generate a specific prompt (power users) |
+| `atmo.generate("epic boss choir")` | Force generate a specific prompt |
 | `atmo.openPanel()` | Open the GM control panel |
-| `atmo.getLibrary()` | List all cached tracks grouped by category |
-| `atmo.getCredits()` | Check remaining Suno credits |
+| `atmo.openSetup()` | Open the setup wizard |
+| `atmo.getLibrary()` | List all cached tracks by category |
+| `atmo.getCredits()` | Check remaining PiAPI credits |
 | `atmo.evaluate()` | Force re-evaluate game state and play |
 
 ### Mood Presets
@@ -152,7 +129,6 @@ const atmo = game.modules.get("atmosphera").api;
 
 **Quick mood toggle:**
 ```js
-// Toggle between tension and auto
 const atmo = game.modules.get("atmosphera").api;
 const status = atmo.getStatus();
 atmo.setMood(status.mood === "tension" ? "auto" : "tension");
@@ -165,48 +141,40 @@ game.modules.get("atmosphera").api.generate(
 );
 ```
 
-**Check library size:**
-```js
-const lib = game.modules.get("atmosphera").api.getLibrary();
-const total = Object.values(lib).reduce((sum, tracks) => sum + tracks.length, 0);
-ui.notifications.info(`Atmosphera library: ${total} tracks across ${Object.keys(lib).length} categories`);
-```
-
 ---
 
 ## How It Works
 
-### Architecture
 ```
-Game Hooks → GameStateCollector → PromptBuilder → SunoClient → PlaylistCacheManager → AudioManager
-                                       ↑                              ↑
-                                  Mood Presets              Fuzzy Matching / Library
-                                  Creature Hints            File Storage / Playlists
+Game Hooks → GameStateCollector → PromptBuilder → UdioClient (PiAPI) → PlaylistCacheManager → Foundry Playlists
+                                       ↑                                        ↑
+                                  Mood Presets                          Fuzzy Matching / Library
+                                  Creature Hints
                                   Scene Keywords
 ```
 
-1. **GameStateCollector** reads combat, party HP/resources, and scene data from Foundry
-2. **PromptBuilder** combines that into a Suno-ready prompt with creature hints, mood descriptors, and resource state
-3. **PlaylistCacheManager** checks the library first (exact then fuzzy match) before generating
-4. **SunoClient** generates via the API proxy, polls until complete
-5. **AudioManager** handles A/B deck crossfading with configurable duration
-6. **AtmospheraController** orchestrates everything and manages the lifecycle
+1. **GameStateCollector** reads combat state, party HP/resources, and scene data
+2. **PromptBuilder** builds a natural language music prompt from game state
+3. **PlaylistCacheManager** checks the library first (exact then fuzzy match)
+4. **UdioClient** generates via PiAPI, polls until complete (~2 min)
+5. **FoundryPlaylistManager** handles playback with crossfade
+6. **AtmospheraController** orchestrates lifecycle, cooldown, and deduplication
 
 ### Category System
 Tracks are organized into categories like:
 - `combat-undead` / `combat-fiend-humanoid` / `boss-dragon`
 - `ambient-tavern` / `ambient-dungeon` / `ambient-general`
-- `sting-victory` / `sting-defeat`
 
-These map to Foundry playlists named like "Atmosphera — Combat (undead)".
+These map to Foundry playlists under the "🎵 Atmosphera" folder.
 
-### Resource Tracking
-When enabled, Atmosphera tracks:
-- **Spell slots** (levels 1–9) — current vs max
-- **Hit dice** — remaining vs total
-- **Class resources** (primary/secondary/tertiary)
+### Combat Signature
+Atmosphera tracks combat state with a signature that includes:
+- Active creature types (undead, fiend, etc.)
+- Alive enemy count
+- Alive boss count
+- Boss presence flag
 
-Resource depletion shifts the music toward "weary, desperate" tones. At critical levels (<15%), prompts include "exhausted, on the edge of defeat".
+When any of these change (monster dies, new type enters), music re-evaluates.
 
 ---
 
@@ -214,16 +182,15 @@ Resource depletion shifts the music toward "weary, desperate" tones. At critical
 
 | Setting | Default | Description |
 |---|---|---|
-| Suno API URL | `http://localhost:3100` | Base URL for Suno API proxy |
-| Suno Cookie | — | Session cookie for authentication |
-| 2Captcha API Key | — | Optional captcha solving |
-| Master Volume | 0.5 | Playback volume (0.0–1.0) |
+| PiAPI API Key | — | API key from piapi.ai |
 | Enable Atmosphera | ✅ | Master on/off switch |
-| Crossfade Duration | 3000ms | Duration of crossfade transitions |
+| Master Volume | 0.5 | Playback volume (0.0–1.0) |
+| Crossfade Duration | 3s | Duration of track transitions |
+| Max Cooldown | 180s | Maximum cooldown during rapid switching |
 | Auto-Detect | ✅ | Auto-read game state for music |
 | Track Resources | ✅ | Include spell slots/hit dice in mood |
-| Prompt Style Prefix | — | Prepend to all prompts (e.g. "orchestral") |
-| Audio Folder | `atmosphera` | Data folder for saved tracks |
+| Prompt Style Prefix | — | Prepend to all prompts (e.g., "orchestral") |
+| Scene Refresh | 15 min | Generate new music after this long in same scene |
 
 ---
 
