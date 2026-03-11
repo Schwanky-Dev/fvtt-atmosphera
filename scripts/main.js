@@ -137,8 +137,8 @@ const RESOURCE_DESCRIPTORS = {
 
 const HP_DESCRIPTORS = {
   healthy: { min: 0.75, prompt: null },
-  bloodied: { min: 0.25, prompt: "intense, stakes rising, wounded but fighting" },
-  critical: { min: 0, prompt: "dire peril, last stand, heroic struggle, adrenaline" }
+  bloodied: { min: 0.40, prompt: "desperate, intense, stakes rising, adrenaline, urgent" },
+  critical: { min: 0, prompt: "dire peril, last stand, heroic struggle, do-or-die" }
 };
 
 function getDescriptor(pct, table) {
