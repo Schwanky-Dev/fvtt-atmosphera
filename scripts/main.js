@@ -1169,6 +1169,56 @@ class PlaylistCacheManager {
     }
     return playlist;
   }
+
+  /**
+   * Purge playlist entries whose audio files no longer exist on disk.
+   * Returns the number of removed entries.
+   */
+  static async purgeMissing() {
+    const playlists = game.playlists?.filter(p => p.getFlag(MODULE_ID, "managed") === true) || [];
+    let removed = 0;
+    const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+    for (const playlist of playlists) {
+      const toDelete = [];
+      for (const sound of playlist.sounds) {
+        const path = sound.path;
+        if (!path) { toDelete.push(sound.id); continue; }
+        // Remote URLs — skip (can't verify)
+        if (path.startsWith("http")) continue;
+        try {
+          // Try to browse the directory containing the file
+          const dir = path.substring(0, path.lastIndexOf("/"));
+          const filename = path.substring(path.lastIndexOf("/") + 1);
+          const result = await FP.browse("data", dir);
+          if (!result.files.some(f => f.endsWith(filename))) {
+            toDelete.push(sound.id);
+          }
+        } catch {
+          // Directory doesn't exist — file is definitely missing
+          toDelete.push(sound.id);
+        }
+      }
+      if (toDelete.length) {
+        await playlist.deleteEmbeddedDocuments("PlaylistSound", toDelete);
+        removed += toDelete.length;
+        console.log(`${MODULE_ID} | Purged ${toDelete.length} missing tracks from "${playlist.name}"`);
+      }
+    }
+    return removed;
+  }
+
+  /**
+   * Delete ALL Atmosphera-managed playlists (sounds removed with them).
+   * Audio files on disk are NOT deleted.
+   * Returns number of playlists removed.
+   */
+  static async clearAll() {
+    const playlists = game.playlists?.filter(p => p.getFlag(MODULE_ID, "managed") === true) || [];
+    const ids = playlists.map(p => p.id);
+    if (ids.length) await Playlist.deleteDocuments(ids);
+    console.log(`${MODULE_ID} | Cleared ${ids.length} managed playlists`);
+    return ids.length;
+  }
 }
 
 /* ──────────────────────────── CONTROL PANEL (ApplicationV2) ──────────────── */
@@ -1282,6 +1332,17 @@ class AtmospheraPanel extends foundry.applications.api.HandlebarsApplicationMixi
           </details>
         </div>
 
+        <div class="atmo-section">
+          <details>
+            <summary style="cursor:pointer;font-weight:bold;font-size:12px;">🗑 Cache Management</summary>
+            <div style="margin-top:6px;">
+              <p style="font-size:11px;margin:0 0 6px;">Remove playlist entries for deleted/missing audio files.</p>
+              <button id="atmo-purge-cache" style="width:100%;font-size:11px;">🔄 Purge Missing Tracks</button>
+              <button id="atmo-clear-all-cache" style="width:100%;font-size:11px;margin-top:4px;color:#ff6666;">🗑 Clear ALL Cached Tracks</button>
+            </div>
+          </details>
+        </div>
+
         <div class="atmo-section atmo-status">
           <div id="atmo-gen-status">${c.generationStatus || "Idle"}</div>
           <div id="atmo-credits">Credits: ${c.credits ?? "—"}</div>
@@ -1346,6 +1407,41 @@ class AtmospheraPanel extends foundry.applications.api.HandlebarsApplicationMixi
 
     html.querySelector("#atmo-gen-negative-tags")?.addEventListener("change", (e) => {
       game.settings.set(MODULE_ID, "negativeTags", e.target.value);
+    });
+
+    html.querySelector("#atmo-purge-cache")?.addEventListener("click", async () => {
+      const btn = html.querySelector("#atmo-purge-cache");
+      btn.disabled = true;
+      btn.textContent = "Purging...";
+      try {
+        const removed = await PlaylistCacheManager.purgeMissing();
+        ui.notifications.info(`Atmosphera: Purged ${removed} missing track${removed !== 1 ? "s" : ""}`);
+      } catch (e) {
+        ui.notifications.error("Atmosphera: Purge failed — check console");
+        console.error(`${MODULE_ID} | Purge failed:`, e);
+      }
+      btn.disabled = false;
+      btn.textContent = "🔄 Purge Missing Tracks";
+    });
+
+    html.querySelector("#atmo-clear-all-cache")?.addEventListener("click", async () => {
+      const confirm = await Dialog.confirm({
+        title: "Clear ALL Atmosphera Tracks",
+        content: "<p>This will delete ALL Atmosphera playlists and their sounds. Generated audio files on disk will remain. Continue?</p>",
+      });
+      if (!confirm) return;
+      const btn = html.querySelector("#atmo-clear-all-cache");
+      btn.disabled = true;
+      btn.textContent = "Clearing...";
+      try {
+        const removed = await PlaylistCacheManager.clearAll();
+        ui.notifications.info(`Atmosphera: Cleared ${removed} playlist${removed !== 1 ? "s" : ""}`);
+      } catch (e) {
+        ui.notifications.error("Atmosphera: Clear failed — check console");
+        console.error(`${MODULE_ID} | Clear failed:`, e);
+      }
+      btn.disabled = false;
+      btn.textContent = "🗑 Clear ALL Cached Tracks";
     });
   }
 
@@ -2067,6 +2163,8 @@ Hooks.once("ready", () => {
       controller,
       evaluate: () => controller.evaluateAndPlay(true),
       getCredits: () => UdioClient.getCredits(),
+      purgeCache: () => PlaylistCacheManager.purgeMissing(),
+      clearCache: () => PlaylistCacheManager.clearAll(),
       CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
     };
   }
@@ -2095,32 +2193,8 @@ Hooks.once("ready", () => {
     }
   });
 
-  // ── Create panel macro on first run ──
-  // Foundry v13 has a socket bug with script macros — we set scope and author
-  // explicitly to avoid null field issues in the onack handler.
-  (async () => {
-    try {
-      const setupDone = game.settings.get(MODULE_ID, "setupComplete");
-      if (setupDone && !game.macros?.find(m => m.name === "Atmosphera Panel")) {
-        let folder = game.folders?.find(f => f.name === "Atmosphera" && f.type === "Macro");
-        if (!folder) {
-          folder = await Folder.create({ name: "Atmosphera", type: "Macro", color: "#7a5ba6" });
-        }
-        await Macro.create({
-          name: "Atmosphera Panel",
-          type: "script",
-          scope: "global",
-          author: game.user.id,
-          command: 'game.modules.get("atmosphera").api.openPanel();',
-          img: "icons/svg/sound.svg",
-          folder: folder.id,
-        });
-        console.log(`${MODULE_ID} | Created Atmosphera Panel macro`);
-      }
-    } catch (e) {
-      console.warn(`${MODULE_ID} | Failed to create macro:`, e);
-    }
-  })();
+  // NOTE: Macro.create triggers a Foundry v13 core bug (startsWith on null in socket onack).
+  // Panel access is via: scene control 🎵 button, Atmosphera button on player list, or /atmo chat command.
 
   // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
