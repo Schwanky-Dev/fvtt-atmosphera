@@ -852,7 +852,10 @@ class PlaylistSearcher {
     for (const playlist of game.playlists || []) {
       if (!playlist.sounds.size) continue;
 
+      // Skip Atmosphera-managed playlists — those are handled by _findExact/_findFuzzy
       const isAtmosphera = playlist.getFlag(MODULE_ID, "managed") === true;
+      if (isAtmosphera) continue;
+
       const playlistText = (playlist.name + " " + (playlist.description || "")).toLowerCase();
 
       for (const sound of playlist.sounds) {
@@ -867,16 +870,15 @@ class PlaylistSearcher {
         if (score === 0) continue;
 
         const normalizedScore = score / expandedKeywords.size;
-        const finalScore = isAtmosphera ? normalizedScore * 1.2 : normalizedScore;
 
-        if (finalScore > bestScore) {
-          bestScore = finalScore;
+        if (normalizedScore > bestScore) {
+          bestScore = normalizedScore;
           bestMatch = {
             playlist,
             sound,
             path: sound.path,
-            source: isAtmosphera ? "atmosphera" : "existing",
-            score: finalScore
+            source: "existing",
+            score: normalizedScore
           };
         }
       }
@@ -918,6 +920,15 @@ class PlaylistCacheManager {
    * then try exact Atmosphera match, then fuzzy Atmosphera match.
    */
   static findCached(category, prompt = "") {
+    // Priority 1: Exact Atmosphera match (same category flag)
+    const exact = this._findExact(category);
+    if (exact) return exact;
+
+    // Priority 2: Fuzzy Atmosphera match (keyword overlap between categories)
+    const fuzzy = this._findFuzzy(category);
+    if (fuzzy) return fuzzy;
+
+    // Priority 3: Search ALL playlists by text similarity (existing user music)
     const existingMatch = PlaylistSearcher.search(category, prompt);
     if (existingMatch) {
       return {
@@ -925,15 +936,12 @@ class PlaylistCacheManager {
         sound: existingMatch.sound,
         url: existingMatch.path,
         category,
-        fuzzy: existingMatch.source !== "atmosphera",
+        fuzzy: true,
         fromExisting: existingMatch.source === "existing"
       };
     }
 
-    const exact = this._findExact(category);
-    if (exact) return exact;
-
-    return this._findFuzzy(category);
+    return null;
   }
 
   static _findExact(category) {
