@@ -1,7 +1,7 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.2.0 — Foundry Playlist playback (syncs to all players), existing playlist search,
- *           Atmosphera-flagged playlists, removed browser-only AudioManager.
+ * v0.3.0 — PiAPI Udio integration, Foundry Playlist playback (syncs to all players),
+ *           existing playlist search, Atmosphera-flagged playlists.
  */
 
 const MODULE_ID = "atmosphera";
@@ -97,22 +97,10 @@ function getDescriptor(pct, table) {
 function registerSettings() {
   const s = (key, data) => game.settings.register(MODULE_ID, key, data);
 
-  s("sunoApiUrl", {
-    name: "Suno API URL",
-    hint: "Base URL for the Suno API proxy (e.g. http://localhost:3100)",
-    scope: "world", config: true, type: String, default: "http://localhost:3100"
-  });
-
-  s("sunoModel", {
-    name: "Suno Model Version",
-    hint: "Which Suno AI model to use for generation.",
-    scope: "world", config: true, type: String, default: "chirp-v4",
-    choices: {
-      "chirp-v3-5": "v3.5",
-      "chirp-v4": "v4",
-      "chirp-v4-5": "v4.5",
-      "chirp-crow": "v5 (newest)"
-    }
+  s("piapiApiKey", {
+    name: "PiAPI API Key",
+    hint: "Your PiAPI API key for Udio music generation (from piapi.ai).",
+    scope: "world", config: true, type: String, default: ""
   });
 
   s("instrumental", {
@@ -127,28 +115,10 @@ function registerSettings() {
     scope: "world", config: true, type: String, default: "vocals, singing, voice"
   });
 
-  s("waitAudio", {
-    name: "Wait for Audio",
-    hint: "Wait for Suno to fully generate before returning (slower but more reliable). Enable if tracks aren't completing.",
-    scope: "world", config: true, type: Boolean, default: false
-  });
-
   s("titlePrefix", {
     name: "Title Prefix",
     hint: "Prefix for generated track titles.",
     scope: "world", config: true, type: String, default: "Atmosphera"
-  });
-
-  s("sunoCookie", {
-    name: "Suno Cookie",
-    hint: "Your Suno session cookie for authentication.",
-    scope: "world", config: true, type: String, default: ""
-  });
-
-  s("twoCaptchaKey", {
-    name: "2Captcha API Key",
-    hint: "API key for 2Captcha service (used to solve Suno captchas).",
-    scope: "world", config: true, type: String, default: ""
   });
 
   s("masterVolume", {
@@ -201,20 +171,14 @@ function registerSettings() {
   });
 
   s("reauth", {
-    name: "Re-authenticate Suno",
-    hint: "Click here to re-open the Suno authentication wizard. You can also use the /atmosphera auth chat command.",
+    name: "Re-configure PiAPI",
+    hint: "Click here to re-open the PiAPI configuration wizard. You can also use the /atmosphera auth chat command.",
     scope: "world", config: true, type: Boolean, default: false,
     onChange: () => {
-      // Reset back to false immediately — this is a button, not a toggle
       game.settings.set(MODULE_ID, "reauth", false);
-      // Open step 2 (auth) of the wizard
       const mod = game.modules.get(MODULE_ID);
       if (mod?.api?.openSetup) {
         mod.api.openSetup();
-      } else {
-        // Fallback: open the Suno auth URL directly
-        const url = game.settings.get(MODULE_ID, "sunoApiUrl")?.replace(/\/+$/, "");
-        if (url) window.open(`${url}/auth`, "_blank");
       }
     }
   });
@@ -461,101 +425,128 @@ class PromptBuilder {
   }
 }
 
-/* ──────────────────────────── SUNO CLIENT ──────────────────────────── */
+/* ──────────────────────────── UDIO CLIENT (PiAPI) ──────────────────────────── */
 
-class SunoClient {
+class UdioClient {
   static _queue = Promise.resolve();
 
-  /** Serialize all Suno API calls to prevent rate limiting */
+  /** Serialize all PiAPI calls to prevent rate limiting */
   static _enqueue(fn) {
     this._queue = this._queue.then(fn, fn);
     return this._queue;
   }
 
-  static _baseUrl() {
-    return game.settings.get(MODULE_ID, "sunoApiUrl").replace(/\/+$/, "");
+  static _apiKey() {
+    return game.settings.get(MODULE_ID, "piapiApiKey");
   }
 
   static _headers() {
-    return { "Content-Type": "application/json", Cookie: game.settings.get(MODULE_ID, "sunoCookie") };
+    return { "Content-Type": "application/json", "x-api-key": this._apiKey() };
   }
 
-  static async generate(prompt, title) {
-    const resp = await fetch(`${this._baseUrl()}/api/custom_generate`, {
-      method: "POST", headers: this._headers(),
+  static async createTask(prompt) {
+    const resp = await fetch("https://api.piapi.ai/api/v1/task", {
+      method: "POST",
+      headers: this._headers(),
       body: JSON.stringify({
-        prompt: game.settings.get(MODULE_ID, "instrumental") ? "" : prompt,
-        tags: prompt,
-        title: title,
-        make_instrumental: game.settings.get(MODULE_ID, "instrumental"),
-        model: game.settings.get(MODULE_ID, "sunoModel"),
-        wait_audio: game.settings.get(MODULE_ID, "waitAudio"),
-        negative_tags: game.settings.get(MODULE_ID, "negativeTags") || undefined
+        model: "music-u",
+        task_type: "generate_music",
+        input: {
+          gpt_description_prompt: prompt,
+          negative_tags: game.settings.get(MODULE_ID, "negativeTags") || "",
+          lyrics_type: game.settings.get(MODULE_ID, "instrumental") ? "instrumental" : "default",
+          seed: -1
+        },
+        config: {
+          service_mode: "public",
+          webhook_config: { endpoint: "", secret: "" }
+        }
       })
     });
-    if (!resp.ok) throw new Error(`Suno generate failed: ${resp.status}`);
-    return resp.json();
+    if (!resp.ok) throw new Error(`PiAPI create task failed: ${resp.status}`);
+    const data = await resp.json();
+    if (data.code !== 200) throw new Error(`PiAPI create task error: ${JSON.stringify(data)}`);
+    return data.data.task_id;
   }
 
-  static async poll(ids) {
-    const query = Array.isArray(ids) ? ids.join(",") : ids;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const resp = await fetch(`${this._baseUrl()}/api/get?ids=${query}`, { headers: this._headers() });
-      if (resp.ok) return resp.json();
-      if (resp.status === 500 || resp.status === 429) {
-        const wait = (attempt + 1) * 15000;
-        console.warn(`${MODULE_ID} | Poll got ${resp.status}, retrying in ${wait/1000}s (attempt ${attempt + 1}/3)`);
-        await new Promise(r => setTimeout(r, wait));
-        continue;
-      }
-      throw new Error(`Suno poll failed: ${resp.status}`);
-    }
-    throw new Error("Suno poll failed after 3 retries");
+  static async pollTask(taskId) {
+    const resp = await fetch(`https://api.piapi.ai/api/v1/task/${taskId}`, {
+      headers: { "x-api-key": this._apiKey() }
+    });
+    if (!resp.ok) throw new Error(`PiAPI poll failed: ${resp.status}`);
+    return resp.json();
   }
 
   static async getCredits() {
-    const resp = await fetch(`${this._baseUrl()}/api/get_limit`, { headers: this._headers() });
-    if (!resp.ok) throw new Error(`Suno credits failed: ${resp.status}`);
-    return resp.json();
+    // PiAPI doesn't have a dedicated balance endpoint accessible this way;
+    // return a stub so callers don't break.
+    return { credits_left: "N/A (check piapi.ai dashboard)" };
   }
 
   static generateAndWait(prompt, title) {
-    // Serialize through queue so only one generation polls at a time
     return this._enqueue(() => this._generateAndWaitInner(prompt, title));
   }
 
   static async _generateAndWaitInner(prompt, title) {
-    console.log(`${MODULE_ID} | Generating: "${title}" — ${prompt}`);
-    const genResult = await this.generate(prompt, title);
+    console.log(`${MODULE_ID} | Generating via PiAPI Udio: "${title}" — ${prompt}`);
+    const taskId = await this.createTask(prompt);
+    console.log(`${MODULE_ID} | PiAPI task created: ${taskId}`);
 
-    if (Array.isArray(genResult)) {
-      const alreadyDone = genResult.find(r => r.status === "complete" && r.audio_url);
-      if (alreadyDone) {
-        console.log(`${MODULE_ID} | wait_audio returned completed track immediately`);
-        return { id: alreadyDone.id, url: alreadyDone.audio_url, title: alreadyDone.title, tags: alreadyDone.metadata?.tags || prompt, duration: alreadyDone.metadata?.duration, prompt };
+    for (let i = 0; i < 180; i++) {
+      await new Promise(r => setTimeout(r, 10000)); // 10s between polls
+      if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i + 1}/180 for task ${taskId}...`);
+
+      let result;
+      try {
+        result = await this.pollTask(taskId);
+      } catch (e) {
+        console.warn(`${MODULE_ID} | Poll error (will retry): ${e.message}`);
+        continue;
       }
-    }
 
-    const ids = genResult.map(r => r.id);
+      const status = result?.data?.status;
+      if (status === "success") {
+        const output = result.data.task_result?.output;
+        // output may be a URL string, an object with audio_url, or an array of tracks
+        let audioUrl, trackTitle, duration;
+        if (typeof output === "string") {
+          audioUrl = output;
+        } else if (Array.isArray(output) && output.length > 0) {
+          const track = output[0];
+          audioUrl = track.audio_url || track.url || track;
+          trackTitle = track.title;
+          duration = track.duration;
+        } else if (output && typeof output === "object") {
+          audioUrl = output.audio_url || output.url;
+          trackTitle = output.title;
+          duration = output.duration;
+        }
 
-    for (let i = 0; i < 120; i++) {
-      await new Promise(r => setTimeout(r, 8000)); // 8s between polls to reduce rate limit risk
-      if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i}/120 for ${ids[0]}...`);
-      const status = await this.poll(ids);
-      const done = status.filter(s => s.status === "complete");
-      if (done.length > 0) {
-        const track = done[0];
-        console.log(`${MODULE_ID} | Track complete: ${track.id}`);
-        return { id: track.id, url: track.audio_url, title: track.title, tags: track.metadata?.tags || prompt, duration: track.metadata?.duration, prompt };
+        if (!audioUrl) {
+          console.warn(`${MODULE_ID} | Task succeeded but no audio URL found in output:`, output);
+          throw new Error("PiAPI task succeeded but no audio URL in response");
+        }
+
+        console.log(`${MODULE_ID} | Track complete: ${taskId}`);
+        return {
+          id: taskId,
+          url: audioUrl,
+          title: trackTitle || title,
+          tags: prompt,
+          duration: duration || null,
+          prompt
+        };
       }
-      if (status.every(s => s.status === "error")) {
-        const err = new Error("All Suno generations failed");
-        err._sunoIds = ids;
+
+      if (status === "failed") {
+        const err = new Error("PiAPI Udio generation failed");
+        err._taskId = taskId;
         throw err;
       }
+      // pending, starting, processing — keep polling
     }
-    const err = new Error("Suno generation timed out");
-    err._sunoIds = ids;
+    const err = new Error("PiAPI Udio generation timed out (30 min)");
+    err._taskId = taskId;
     throw err;
   }
 }
@@ -963,7 +954,7 @@ class PlaylistCacheManager {
       path: filePath, volume: 0.8, repeat: true,
       fade: game.settings.get(MODULE_ID, "crossfadeDuration"),
       description: track.prompt || `Generated for: ${category}`,
-      flags: { [MODULE_ID]: { prompt: track.prompt || "", category, generatedAt: Date.now(), sunoId: track.id } }
+      flags: { [MODULE_ID]: { prompt: track.prompt || "", category, generatedAt: Date.now(), udioTaskId: track.id } }
     }]);
 
     return filePath;
@@ -979,7 +970,7 @@ class PlaylistCacheManager {
     }
 
     statusCb?.("Generating…");
-    const track = await SunoClient.generateAndWait(prompt, title);
+    const track = await UdioClient.generateAndWait(prompt, title);
     statusCb?.("Downloading…");
     return this.saveTrack(category, track);
   }
@@ -988,7 +979,7 @@ class PlaylistCacheManager {
     if (this.findCached(category, prompt)) return;
     try {
       console.log(`${MODULE_ID} | Preloading: ${category}`);
-      const track = await SunoClient.generateAndWait(prompt, title);
+      const track = await UdioClient.generateAndWait(prompt, title);
       await this.saveTrack(category, track);
       console.log(`${MODULE_ID} | Preloaded: ${category}`);
     } catch (e) {
@@ -1100,15 +1091,6 @@ class AtmospheraPanel extends Application {
             <summary style="cursor:pointer;font-weight:bold;font-size:12px;">⚙ Generation Settings</summary>
             <div style="margin-top:6px;">
               <div style="margin-bottom:6px;">
-                <label style="font-size:11px;">Model Version</label>
-                <select id="atmo-gen-model" style="width:100%;">
-                  <option value="chirp-v3-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v3-5" ? "selected" : ""}>v3.5</option>
-                  <option value="chirp-v4" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4" ? "selected" : ""}>v4</option>
-                  <option value="chirp-v4-5" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-v4-5" ? "selected" : ""}>v4.5</option>
-                  <option value="chirp-crow" ${game.settings.get(MODULE_ID, "sunoModel") === "chirp-crow" ? "selected" : ""}>v5 (newest)</option>
-                </select>
-              </div>
-              <div style="margin-bottom:6px;">
                 <label style="font-size:11px;">
                   <input type="checkbox" id="atmo-gen-instrumental" ${game.settings.get(MODULE_ID, "instrumental") ? "checked" : ""}/> Instrumental (no vocals)
                 </label>
@@ -1162,10 +1144,6 @@ class AtmospheraPanel extends Application {
       const v = parseFloat(e.target.value);
       FoundryPlaylistManager.setVolume(v);
       game.settings.set(MODULE_ID, "masterVolume", v);
-    });
-
-    html.find("#atmo-gen-model").on("change", (e) => {
-      game.settings.set(MODULE_ID, "sunoModel", e.target.value);
     });
 
     html.find("#atmo-gen-instrumental").on("change", (e) => {
@@ -1372,12 +1350,12 @@ class AtmospheraController {
 
       // If API is consistently failing, stop retrying aggressively
       if (this._consecutiveFailures >= 3) {
-        console.warn(`${MODULE_ID} | ${this._consecutiveFailures} consecutive failures — backing off. Check Suno API proxy.`);
+        console.warn(`${MODULE_ID} | ${this._consecutiveFailures} consecutive failures — backing off. Check PiAPI key/connection.`);
         ui.notifications.warn(`Atmosphera: API unavailable (${this._consecutiveFailures} failures). Will retry in ${this._consecutiveFailures * 30}s.`);
       }
 
-      // Check if we have pending Suno IDs we can keep polling for
-      const pendingIds = err._sunoIds;
+      // Check if we have a pending task ID we can keep polling for
+      const pendingIds = err._taskId ? [err._taskId] : null;
 
       // Play fallback immediately so there's no silence
       const fallback = PlaylistCacheManager.findAnyTrack(category);
@@ -1419,16 +1397,25 @@ class AtmospheraController {
   }
 
   async _backgroundPoll(ids, prompt, title, category) {
-    // Keep trying to poll for completed tracks even after main generation errored
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 10000)); // 10s intervals, more relaxed
+    const taskId = ids[0];
+    if (!taskId) return;
+    // Keep trying to poll for completed task even after main generation errored
+    for (let i = 0; i < 180; i++) {
+      await new Promise(r => setTimeout(r, 10000));
       try {
-        const status = await SunoClient.poll(ids);
-        const done = status.filter(s => s.status === "complete");
-        if (done.length > 0) {
-          const track = done[0];
-          console.log(`${MODULE_ID} | Background poll succeeded! Track ready: ${track.id}`);
-          const url = await PlaylistCacheManager.saveTrack(category, { ...track, url: track.audio_url, prompt });
+        const result = await UdioClient.pollTask(taskId);
+        const status = result?.data?.status;
+        if (status === "success") {
+          const output = result.data.task_result?.output;
+          let audioUrl;
+          if (typeof output === "string") audioUrl = output;
+          else if (Array.isArray(output) && output.length > 0) audioUrl = output[0].audio_url || output[0].url || output[0];
+          else if (output && typeof output === "object") audioUrl = output.audio_url || output.url;
+
+          if (!audioUrl) { console.warn(`${MODULE_ID} | Background poll: no audio URL in output`); return; }
+
+          console.log(`${MODULE_ID} | Background poll succeeded! Task ready: ${taskId}`);
+          const url = await PlaylistCacheManager.saveTrack(category, { id: taskId, url: audioUrl, title, tags: prompt, duration: null, prompt });
           const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
           const volume = game.settings.get(MODULE_ID, "masterVolume");
           await FoundryPlaylistManager.play(url, category, { volume, fadeDuration, title, prompt });
@@ -1437,15 +1424,15 @@ class AtmospheraController {
           if (this.panel) this.panel.render();
           return;
         }
-        if (status.every(s => s.status === "error")) {
-          console.warn(`${MODULE_ID} | Background poll: all tracks failed`);
+        if (status === "failed") {
+          console.warn(`${MODULE_ID} | Background poll: task failed`);
           return;
         }
       } catch (e) {
         console.warn(`${MODULE_ID} | Background poll error (will retry):`, e.message);
       }
     }
-    console.warn(`${MODULE_ID} | Background poll timed out after 10 minutes`);
+    console.warn(`${MODULE_ID} | Background poll timed out after 30 minutes`);
   }
 
   _pregenerateStings() {
@@ -1575,7 +1562,7 @@ class AtmospheraController {
 
   async _refreshCredits() {
     try {
-      const data = await SunoClient.getCredits();
+      const data = await UdioClient.getCredits();
       this.credits = data.credits_left ?? data.total_credits_left ?? "?";
       if (this.panel) this.panel.updateCredits(this.credits);
     } catch { /* silent */ }
@@ -1633,49 +1620,29 @@ class AtmospheraSetupWizard {
     return `<div class="atmosphera-wizard-content">
       <h2>Welcome to Atmosphera!</h2>
       <p>Let's get you set up.</p>
-      <p>Atmosphera generates dynamic background music using <strong>Suno AI</strong>.
+      <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.2.0:</strong> Music now plays through Foundry's playlist system,
-      so <em>all connected players</em> hear the music — not just the GM!</p>
+      <p><strong>New in v0.3.0:</strong> Now using PiAPI's Udio integration — no self-hosted proxy needed!</p>
       <p>You'll need:</p>
       <ul>
-        <li>A running <strong>Suno API proxy</strong> — <a href="https://github.com/SunoAI-API/Suno-API" target="_blank">github.com/SunoAI-API/Suno-API</a></li>
-        <li>Your <strong>Suno session cookie</strong> for authentication</li>
+        <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
       </ul>
     </div>`;
   }
 
   static _step2HTML() {
-    const url = game.settings.get(MODULE_ID, "sunoApiUrl") || "http://localhost:3100";
-    const cookie = game.settings.get(MODULE_ID, "sunoCookie") || "";
-    const captcha = game.settings.get(MODULE_ID, "twoCaptchaKey") || "";
+    const apiKey = game.settings.get(MODULE_ID, "piapiApiKey") || "";
     return `<div class="atmosphera-wizard-content">
       <h2>API Configuration</h2>
       <div class="atmosphera-wizard-field" style="background:#f0edf5;padding:8px;border-radius:4px;margin-bottom:8px;">
-        <strong>Quick Start:</strong> Run the included Docker proxy on your Foundry server:
-        <pre style="background:#2b2b2b;color:#e0e0e0;padding:6px;border-radius:3px;font-size:11px;overflow-x:auto;margin:4px 0;">cd /path/to/modules/atmosphera && cp .env.example .env && nano .env && docker-compose up -d</pre>
-        Then use <code>http://localhost:3100</code> as the API URL below.<br/>
-        <em style="font-size:11px;">If Foundry runs on a different machine than your browser, use the server's IP address instead of localhost.</em>
+        <strong>Quick Start:</strong> Sign up at <a href="https://piapi.ai" target="_blank">piapi.ai</a>,
+        get an API key, and paste it below. That's it — no proxy server needed!
       </div>
       <div class="atmosphera-wizard-field">
-        <label>Suno API URL</label>
-        <input type="text" id="atmo-wiz-url" value="${url}" placeholder="http://localhost:3100"/>
-      </div>
-      <div class="atmosphera-wizard-field">
-        <label>Suno Authentication</label>
-        <button type="button" id="atmo-wiz-auth" class="atmosphera-wizard-btn" style="margin-bottom:4px;">🔑 Sign In to Suno</button>
-        <span id="atmo-wiz-auth-status" class="atmosphera-wizard-hint">Click to open the authentication page on your proxy server.</span>
-        <details style="margin-top:4px;">
-          <summary style="cursor:pointer;font-size:11px;color:#888;">Advanced: Manual cookie paste</summary>
-          <input type="password" id="atmo-wiz-cookie" value="${cookie}" placeholder="__client=eyJ..." style="margin-top:4px;"/>
-          <span class="atmosphera-wizard-hint">Paste the <code>__client</code> cookie value from suno.com DevTools.</span>
-        </details>
-      </div>
-      <div class="atmosphera-wizard-field">
-        <label>2Captcha API Key <em>(optional)</em></label>
-        <input type="text" id="atmo-wiz-captcha" value="${captcha}" placeholder="Only if your proxy requires it"/>
-        <span class="atmosphera-wizard-hint">Only needed if your Suno API proxy requires captcha solving.</span>
+        <label>PiAPI API Key</label>
+        <input type="password" id="atmo-wiz-apikey" value="${apiKey}" placeholder="your-piapi-api-key"/>
+        <span class="atmosphera-wizard-hint">Your API key from <a href="https://piapi.ai" target="_blank">piapi.ai</a>.</span>
       </div>
       <div class="atmosphera-wizard-field">
         <button type="button" id="atmo-wiz-test" class="atmosphera-wizard-btn">🔌 Test Connection</button>
@@ -1721,40 +1688,25 @@ class AtmospheraSetupWizard {
 
   static _onRender(html, step) {
     if (step === 2) {
-      html.find("#atmo-wiz-auth").on("click", () => {
-        const urlInput = html.find("#atmo-wiz-url").val().replace(/\/+$/, "");
-        if (!urlInput) { ui.notifications.warn("Enter the Suno API URL first."); return; }
-        window.open(`${urlInput}/auth`, "_blank");
-        const statusEl = html.find("#atmo-wiz-auth-status");
-        statusEl.text("Checking auth status…").css("color", "#aaa");
-        // Poll for auth completion
-        let polls = 0;
-        const pollInterval = setInterval(async () => {
-          polls++;
-          if (polls > 150) { clearInterval(pollInterval); statusEl.text("⏰ Timed out. Try again or use manual paste.").css("color", "#a66"); return; }
-          try {
-            const resp = await fetch(`${urlInput}/api/auth/status`);
-            const data = await resp.json();
-            if (data.authenticated) {
-              clearInterval(pollInterval);
-              statusEl.text(`✅ Authenticated! Expires: ${data.expiresAt || "unknown"}`).css("color", "#6a6");
-              this._testPassed = true;
-            }
-          } catch {}
-        }, 2000);
-      });
       html.find("#atmo-wiz-test").on("click", async () => {
-        const urlInput = html.find("#atmo-wiz-url").val().replace(/\/+$/, "");
-        const cookie = html.find("#atmo-wiz-cookie").val();
+        const apiKey = html.find("#atmo-wiz-apikey").val()?.trim();
         const result = html.find("#atmo-wiz-test-result");
+        if (!apiKey) { result.text("❌ Enter an API key first.").css("color", "#a66"); return; }
         result.text("Testing…").css("color", "#aaa");
         try {
-          const resp = await fetch(`${urlInput}/api/get_limit`, { headers: { "Content-Type": "application/json", Cookie: cookie } });
+          const resp = await fetch("https://api.piapi.ai/api/v1/task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify({ model: "music-u", task_type: "generate_music", input: { gpt_description_prompt: "test", negative_tags: "", lyrics_type: "instrumental", seed: -1 }, config: { service_mode: "public", webhook_config: { endpoint: "", secret: "" } } })
+          });
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           const data = await resp.json();
-          const credits = data.credits_left ?? data.total_credits_left ?? "?";
-          result.text(`✅ Connected! Credits remaining: ${credits}`).css("color", "#6a6");
-          this._testPassed = true;
+          if (data.code === 200) {
+            result.text(`✅ Connected! Task created: ${data.data?.task_id || "OK"}`).css("color", "#6a6");
+            this._testPassed = true;
+          } else {
+            throw new Error(data.message || `Code ${data.code}`);
+          }
         } catch (e) {
           result.text(`❌ Failed: ${e.message}`).css("color", "#a66");
           this._testPassed = false;
@@ -1775,12 +1727,8 @@ class AtmospheraSetupWizard {
   }
 
   static _saveStep2(html) {
-    const url = html.find("#atmo-wiz-url").val()?.trim() || "http://localhost:3100";
-    const cookie = html.find("#atmo-wiz-cookie").val()?.trim() || "";
-    const captcha = html.find("#atmo-wiz-captcha").val()?.trim() || "";
-    game.settings.set(MODULE_ID, "sunoApiUrl", url);
-    game.settings.set(MODULE_ID, "sunoCookie", cookie);
-    game.settings.set(MODULE_ID, "twoCaptchaKey", captcha);
+    const apiKey = html.find("#atmo-wiz-apikey").val()?.trim() || "";
+    game.settings.set(MODULE_ID, "piapiApiKey", apiKey);
   }
 
   static _saveStep3(html) {
@@ -1799,7 +1747,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.2.0`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.3.0`);
 });
 
 Hooks.once("ready", () => {
@@ -1824,16 +1772,15 @@ Hooks.once("ready", () => {
       // Power-user / internal access
       controller,
       evaluate: () => controller.evaluateAndPlay(true),
-      getCredits: () => SunoClient.getCredits(),
+      getCredits: () => UdioClient.getCredits(),
       CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
     };
   }
 
   // ── First-run setup wizard ──
   if (!game.settings.get(MODULE_ID, "setupComplete")) {
-    const url = game.settings.get(MODULE_ID, "sunoApiUrl");
-    const cookie = game.settings.get(MODULE_ID, "sunoCookie");
-    if (!url || url === "http://localhost:3100" || !cookie) {
+    const apiKey = game.settings.get(MODULE_ID, "piapiApiKey");
+    if (!apiKey) {
       AtmospheraSetupWizard.open(controller);
     }
   }
@@ -2074,5 +2021,5 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v0.2.0 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.3.0 ready — music syncs to all players via Foundry playlists.");
 });
