@@ -1454,7 +1454,39 @@ class AtmospheraController {
   onSceneChange(sceneId) {
     this._currentSceneId = sceneId;
     this._forceNewGeneration = false;
-    this._resetSceneRefreshTimer();
+
+    // Don't start variety timer for default/placeholder scenes
+    const sceneName = canvas?.scene?.name || "";
+    if (DEFAULT_SCENE_NAMES.has(sceneName.toLowerCase().trim())) {
+      if (this._sceneRefreshTimer) clearTimeout(this._sceneRefreshTimer);
+    } else {
+      this._resetSceneRefreshTimer();
+    }
+  }
+
+  /** Play a cached track directly without triggering generation. */
+  async _playFromCache(cached, category) {
+    if (this._playbackLock) return;
+    if (this._lastPlayTime && (Date.now() - this._lastPlayTime) < this._minPlayDuration) return;
+
+    const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
+    const volume = game.settings.get(MODULE_ID, "masterVolume");
+
+    this._playbackLock = true;
+    this._setStatus("Playing (cached)");
+    this.currentTrackInfo = category;
+    this._lastCategory = category;
+    if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
+
+    try {
+      await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration });
+      this._lastPlayTime = Date.now();
+      if (this.panel) this.panel.render();
+    } catch (e) {
+      console.error(`${MODULE_ID} | Cache playback failed:`, e);
+    } finally {
+      setTimeout(() => { this._playbackLock = false; }, 5000);
+    }
   }
 
   openPanel() {
