@@ -1,7 +1,7 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.3.0 — PiAPI Udio integration, Foundry Playlist playback (syncs to all players),
- *           existing playlist search, Atmosphera-flagged playlists.
+ * v0.4.0 — ApplicationV2 migration, consolidated playlists, generation cooldown,
+ *           scene variety timer, richer prompts, dedup detection.
  */
 
 const MODULE_ID = "atmosphera";
@@ -70,6 +70,52 @@ const MOOD_PRESETS = {
   epic: "grand, sweeping, orchestral, cinematic, powerful"
 };
 
+/* ──────────────────────────── ATMOSPHERIC MODIFIERS (for prompt variety) ──── */
+
+const ATMOSPHERIC_MODIFIERS = [
+  "with distant echoes", "tension building slowly", "with subtle percussion",
+  "strings prominent", "minimal and sparse", "layered and complex",
+  "with reverb", "lo-fi texture", "cinematic quality", "with ambient pads",
+  "brooding undertones", "gentle arpeggios", "with deep bass",
+  "ethereal atmosphere", "with wind instruments", "rhythmic and driving",
+  "sparse and haunting", "warm and enveloping", "with choir accents",
+  "mysterious overtones"
+];
+
+/* ──────────────────────────── TITLE TEMPLATES ──────────────────────────── */
+
+const COMBAT_TITLE_TEMPLATES = [
+  "Battle: {creatures}",
+  "Steel Against {creature}",
+  "{creature}'s Domain",
+  "The {mood} Confrontation",
+  "Clash in {scene}",
+  "Blades of {scene}",
+  "{creature} Rising",
+  "Fury of the {creature}",
+  "Stand Against {creatures}",
+  "The {mood} Battle"
+];
+
+const AMBIENT_TITLE_TEMPLATES = [
+  "Shadows of {scene}",
+  "Echoes in {scene}",
+  "The {mood} {scene}",
+  "Whispers of {scene}",
+  "{scene} — {mood}",
+  "Wandering {scene}",
+  "Heart of {scene}",
+  "Beneath {scene}",
+  "The Stillness of {scene}",
+  "{mood} Passage"
+];
+
+const MOOD_DESCRIPTORS = [
+  "Dark", "Haunted", "Serene", "Ancient", "Forgotten", "Sacred",
+  "Twisted", "Luminous", "Shifting", "Silent", "Restless", "Fading",
+  "Crimson", "Verdant", "Gilded", "Sunken", "Hollow", "Ember"
+];
+
 /* ──────────────────────────── RESOURCE THRESHOLDS ──────────────────────────── */
 
 const RESOURCE_DESCRIPTORS = {
@@ -92,6 +138,58 @@ function getDescriptor(pct, table) {
   return null;
 }
 
+function _pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function _pickRandomN(arr, n) {
+  const shuffled = [...arr].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, n);
+}
+
+/* ──────────────────────────── DEDUP DETECTION ──────────────────────────── */
+
+class PromptDeduplicator {
+  constructor(maxHistory = 5) {
+    this._history = [];
+    this._maxHistory = maxHistory;
+  }
+
+  /**
+   * Check if prompt is too similar to recent prompts.
+   * Returns true if >80% word overlap with any recent prompt.
+   */
+  isSimilar(prompt) {
+    const words = this._tokenize(prompt);
+    for (const prev of this._history) {
+      const prevWords = this._tokenize(prev);
+      const overlap = this._overlapRatio(words, prevWords);
+      if (overlap > 0.8) return true;
+    }
+    return false;
+  }
+
+  record(prompt) {
+    this._history.push(prompt);
+    if (this._history.length > this._maxHistory) {
+      this._history.shift();
+    }
+  }
+
+  _tokenize(str) {
+    return new Set(str.toLowerCase().split(/[\s,]+/).filter(w => w.length > 2));
+  }
+
+  _overlapRatio(setA, setB) {
+    if (setA.size === 0 || setB.size === 0) return 0;
+    let overlap = 0;
+    for (const w of setA) {
+      if (setB.has(w)) overlap++;
+    }
+    return overlap / Math.max(setA.size, setB.size);
+  }
+}
+
 /* ──────────────────────────── SETTINGS ──────────────────────────── */
 
 function registerSettings() {
@@ -112,7 +210,8 @@ function registerSettings() {
   s("negativeTags", {
     name: "Negative Tags",
     hint: "Styles/elements to avoid in generated music. Comma-separated.",
-    scope: "world", config: true, type: String, default: "vocals, singing, voice"
+    scope: "world", config: true, type: String,
+    default: "vocals, singing, lyrics, voice, spoken word"
   });
 
   s("titlePrefix", {
@@ -163,6 +262,20 @@ function registerSettings() {
     name: "Audio Folder",
     hint: "Folder name under Data/ for saved Atmosphera tracks.",
     scope: "world", config: true, type: String, default: "atmosphera"
+  });
+
+  s("generationCooldown", {
+    name: "Generation Cooldown (seconds)",
+    hint: "Minimum time between successful generations to avoid wasting credits.",
+    scope: "world", config: true, type: Number, default: 180,
+    range: { min: 60, max: 600, step: 10 }
+  });
+
+  s("sceneRefreshInterval", {
+    name: "Scene Variety Timer (minutes)",
+    hint: "After this many minutes in the same scene, trigger a fresh generation.",
+    scope: "world", config: true, type: Number, default: 15,
+    range: { min: 5, max: 60, step: 1 }
   });
 
   s("setupComplete", {
@@ -345,6 +458,10 @@ class PromptBuilder {
     if (hpDesc) parts.push(`party ${hpDesc}`);
     if (resDesc) parts.push(resDesc);
 
+    // Add 1-2 random atmospheric modifiers for variety
+    const modifiers = _pickRandomN(ATMOSPHERIC_MODIFIERS, 1 + Math.floor(Math.random() * 2));
+    parts.push(...modifiers);
+
     const prompt = parts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
     const title = this._buildTitle(combat, scene);
 
@@ -404,15 +521,31 @@ class PromptBuilder {
   }
 
   static _buildTitle(combat, scene) {
-    const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
-    const parts = [prefix];
+    const mood = _pickRandom(MOOD_DESCRIPTORS);
+
     if (combat.active) {
-      parts.push(combat.hasBoss ? "Boss Battle" : "Combat");
-      if (combat.creatureTypes[0]) parts.push(`(${combat.creatureTypes[0]})`);
+      const template = _pickRandom(COMBAT_TITLE_TEMPLATES);
+      const creatureName = combat.hasBoss
+        ? (combat.bosses.filter(b => !b.isDead)[0]?.name || "Boss")
+        : (combat.creatureTypes[0] || "Foe");
+      const creatureNames = combat.creatureTypes.length
+        ? combat.creatureTypes.slice(0, 2).map(t => t.replace(/^\w/, c => c.toUpperCase())).join(" & ")
+        : "Unknown Foes";
+      const sceneName = canvas?.scene?.name || "the Unknown";
+
+      return template
+        .replace("{creature}", creatureName.replace(/^\w/, c => c.toUpperCase()))
+        .replace("{creatures}", creatureNames)
+        .replace("{scene}", sceneName)
+        .replace("{mood}", mood);
     } else {
-      parts.push(scene.name || "Ambient");
+      const template = _pickRandom(AMBIENT_TITLE_TEMPLATES);
+      const sceneName = scene.name || "the Unknown";
+
+      return template
+        .replace("{scene}", sceneName)
+        .replace("{mood}", mood);
     }
-    return parts.join(" — ");
   }
 
   static buildSting(type) {
@@ -478,8 +611,6 @@ class UdioClient {
   }
 
   static async getCredits() {
-    // PiAPI doesn't have a dedicated balance endpoint accessible this way;
-    // return a stub so callers don't break.
     return { credits_left: "N/A (check piapi.ai dashboard)" };
   }
 
@@ -493,7 +624,7 @@ class UdioClient {
     console.log(`${MODULE_ID} | PiAPI task created: ${taskId}`);
 
     for (let i = 0; i < 180; i++) {
-      await new Promise(r => setTimeout(r, 10000)); // 10s between polls
+      await new Promise(r => setTimeout(r, 10000));
       if (i % 10 === 0) console.log(`${MODULE_ID} | Polling attempt ${i + 1}/180 for task ${taskId}...`);
 
       let result;
@@ -506,11 +637,9 @@ class UdioClient {
 
       const status = result?.data?.status;
       if (status === "completed" || status === "success") {
-        // PiAPI Udio output: data.output.songs[] with song_path, title, duration
         const output = result.data.output || result.data.task_result?.output;
         let audioUrl, trackTitle, duration;
 
-        // Handle songs array (Udio format)
         if (output?.songs && Array.isArray(output.songs) && output.songs.length > 0) {
           const track = output.songs[0];
           audioUrl = track.song_path || track.audio_url || track.url;
@@ -550,7 +679,6 @@ class UdioClient {
         err._taskId = taskId;
         throw err;
       }
-      // pending, starting, processing — keep polling
     }
     const err = new Error("PiAPI Udio generation timed out (30 min)");
     err._taskId = taskId;
@@ -562,13 +690,12 @@ class UdioClient {
 
 /**
  * Manages playback through Foundry's native Playlist system.
- * All audio is played via Foundry playlists, which syncs to ALL connected players.
+ * Uses consolidated playlists: "🎵 Atmosphera — Ambient" and "🎵 Atmosphera — Combat".
  */
 class FoundryPlaylistManager {
 
   /**
    * Stop all Atmosphera-managed playlists (those with the atmosphera flag).
-   * Does NOT stop user's manually-playing playlists.
    */
   static async stopAllAtmosphera(fadeDuration = 1000) {
     const playlists = game.playlists?.filter(p =>
@@ -577,7 +704,6 @@ class FoundryPlaylistManager {
 
     for (const playlist of playlists) {
       try {
-        // Stop each playing sound with fade
         for (const sound of playlist.sounds) {
           if (sound.playing) {
             await playlist.stopSound(sound, { fade: fadeDuration });
@@ -585,7 +711,6 @@ class FoundryPlaylistManager {
         }
       } catch (e) {
         console.warn(`${MODULE_ID} | Error stopping playlist "${playlist.name}":`, e);
-        // Fallback: try stopAll
         try { await playlist.stopAll(); } catch {}
       }
     }
@@ -593,11 +718,7 @@ class FoundryPlaylistManager {
 
   /**
    * Play a track via Foundry's playlist system.
-   * Finds or creates the appropriate playlist, adds the sound if needed, then plays it.
-   * @param {string} filePath - Path to audio file (local) or URL
-   * @param {string} category - Category for playlist organization
-   * @param {object} options - { volume, fadeDuration, title, prompt }
-   * @returns {object} { playlist, sound } - The Foundry playlist and sound documents
+   * Uses consolidated playlists instead of per-category playlists.
    */
   static async play(filePath, category, options = {}) {
     const {
@@ -610,7 +731,7 @@ class FoundryPlaylistManager {
     // Stop currently playing Atmosphera playlists first
     await this.stopAllAtmosphera(fadeDuration);
 
-    // Find or create the playlist for this category
+    // Use consolidated playlist name
     const playlistName = PlaylistCacheManager._playlistName(category);
     let playlist = game.playlists?.find(p => p.name === playlistName);
 
@@ -618,22 +739,19 @@ class FoundryPlaylistManager {
       playlist = await Playlist.create({
         name: playlistName,
         mode: CONST.PLAYLIST_MODES.SEQUENTIAL,
-        description: `Auto-generated by Atmosphera for "${category}"`,
+        description: `Auto-generated by Atmosphera`,
         playing: false,
         fade: fadeDuration,
         flags: { [MODULE_ID]: { managed: true, category: category } }
       });
     } else if (!playlist.getFlag(MODULE_ID, "managed")) {
-      // Ensure existing Atmosphera playlists get flagged
       await playlist.setFlag(MODULE_ID, "managed", true);
-      await playlist.setFlag(MODULE_ID, "category", category);
     }
 
     // Check if this sound already exists in the playlist
     let sound = playlist.sounds.find(s => s.path === filePath);
 
     if (!sound) {
-      // Add the track as a PlaylistSound
       const created = await playlist.createEmbeddedDocuments("PlaylistSound", [{
         name: title || `${category} — ${Date.now()}`,
         path: filePath,
@@ -645,7 +763,6 @@ class FoundryPlaylistManager {
       }]);
       sound = created[0];
     } else {
-      // Update volume and fade on existing sound
       await sound.update({ volume: volume, fade: fadeDuration });
     }
 
@@ -698,13 +815,8 @@ class FoundryPlaylistManager {
 
 /* ──────────────────────────── EXISTING PLAYLIST SEARCH ──────────────────────────── */
 
-/**
- * Search ALL Foundry playlists (not just Atmosphera-created) for tracks
- * matching the current context. Prefers Atmosphera-flagged playlists.
- */
 class PlaylistSearcher {
 
-  // Common synonyms/related words for better matching
   static KEYWORD_SYNONYMS = {
     combat: ["battle", "fight", "war", "clash", "skirmish"],
     battle: ["combat", "fight", "war", "clash"],
@@ -723,17 +835,10 @@ class PlaylistSearcher {
     horror: ["scary", "creepy", "dark", "fear", "dread"]
   };
 
-  /**
-   * Search all playlists for a track matching the given context keywords.
-   * @param {string} category - The category string (e.g. "combat-undead", "ambient-tavern")
-   * @param {string} prompt - The full prompt string for additional keyword extraction
-   * @returns {object|null} { playlist, sound, path, source: "existing"|"atmosphera", score }
-   */
   static search(category, prompt = "") {
     const keywords = this._extractKeywords(category, prompt);
     if (keywords.length === 0) return null;
 
-    // Expand keywords with synonyms
     const expandedKeywords = new Set(keywords);
     for (const kw of keywords) {
       const synonyms = this.KEYWORD_SYNONYMS[kw];
@@ -760,10 +865,7 @@ class PlaylistSearcher {
 
         if (score === 0) continue;
 
-        // Normalize by keyword count
         const normalizedScore = score / expandedKeywords.size;
-
-        // Boost Atmosphera-flagged playlists slightly
         const finalScore = isAtmosphera ? normalizedScore * 1.2 : normalizedScore;
 
         if (finalScore > bestScore) {
@@ -779,7 +881,6 @@ class PlaylistSearcher {
       }
     }
 
-    // Only return matches above threshold
     if (bestMatch && bestScore >= 0.3) {
       console.log(`${MODULE_ID} | Playlist search: "${category}" → "${bestMatch.sound.name}" in "${bestMatch.playlist.name}" (score: ${Math.round(bestScore * 100)}%, source: ${bestMatch.source})`);
       return bestMatch;
@@ -788,19 +889,14 @@ class PlaylistSearcher {
     return null;
   }
 
-  /**
-   * Extract searchable keywords from category and prompt.
-   */
   static _extractKeywords(category, prompt) {
     const words = new Set();
 
-    // From category: "combat-undead" → ["combat", "undead"]
     for (const part of category.split("-")) {
       const cleaned = part.trim().toLowerCase();
       if (cleaned && cleaned.length > 2) words.add(cleaned);
     }
 
-    // From prompt: extract significant words (skip common filler)
     const skipWords = new Set(["instrumental", "music", "background", "the", "and", "for", "with", "from", "that", "this", "party", "fighting"]);
     for (const word of prompt.toLowerCase().split(/[\s,]+/)) {
       const cleaned = word.replace(/[^a-z]/g, "");
@@ -814,14 +910,13 @@ class PlaylistSearcher {
 /* ──────────────────────────── PLAYLIST CACHE MANAGER ──────────────────────────── */
 
 class PlaylistCacheManager {
-  static PLAYLIST_PREFIX = "Atmosphera";
+  static PLAYLIST_PREFIX = "🎵 Atmosphera";
 
   /**
    * Find a cached track — first search ALL playlists for matches,
    * then try exact Atmosphera match, then fuzzy Atmosphera match.
    */
   static findCached(category, prompt = "") {
-    // First: search ALL playlists (the big win — finds user's existing music)
     const existingMatch = PlaylistSearcher.search(category, prompt);
     if (existingMatch) {
       return {
@@ -834,18 +929,28 @@ class PlaylistCacheManager {
       };
     }
 
-    // Then: try exact Atmosphera playlist match
     const exact = this._findExact(category);
     if (exact) return exact;
 
-    // Finally: fuzzy Atmosphera match
     return this._findFuzzy(category);
   }
 
   static _findExact(category) {
+    // Search within the consolidated playlist for sounds with matching category flag
     const playlistName = this._playlistName(category);
     const playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist || !playlist.sounds.size) return null;
+
+    // Prefer sounds flagged with this exact category
+    const matchingSounds = [...playlist.sounds].filter(s =>
+      s.getFlag(MODULE_ID, "category") === category
+    );
+    if (matchingSounds.length) {
+      const sound = matchingSounds[Math.floor(Math.random() * matchingSounds.length)];
+      return { playlist, sound, url: sound.path, category, fuzzy: false };
+    }
+
+    // Fallback: any sound in the playlist
     const sounds = [...playlist.sounds];
     const sound = sounds[Math.floor(Math.random() * sounds.length)];
     return { playlist, sound, url: sound.path, category, fuzzy: false };
@@ -863,18 +968,18 @@ class PlaylistCacheManager {
     let bestScore = 0;
 
     for (const playlist of playlists) {
-      const catFromName = this._categoryFromPlaylistName(playlist.name);
-      if (!catFromName) continue;
+      for (const sound of playlist.sounds) {
+        const soundCat = sound.getFlag(MODULE_ID, "category") || "";
+        const candidateKeywords = soundCat.split("-").filter(Boolean);
+        if (!candidateKeywords.length) continue;
 
-      const candidateKeywords = catFromName.split("-").filter(Boolean);
-      const overlap = requestedKeywords.filter(kw => candidateKeywords.includes(kw)).length;
-      const score = overlap / requestedKeywords.length;
+        const overlap = requestedKeywords.filter(kw => candidateKeywords.includes(kw)).length;
+        const score = overlap / requestedKeywords.length;
 
-      if (score > bestScore) {
-        bestScore = score;
-        const sounds = [...playlist.sounds];
-        const sound = sounds[Math.floor(Math.random() * sounds.length)];
-        bestMatch = { playlist, sound, url: sound.path, category: catFromName, fuzzy: true, score };
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = { playlist, sound, url: sound.path, category: soundCat, fuzzy: true, score };
+        }
       }
     }
 
@@ -884,14 +989,6 @@ class PlaylistCacheManager {
     }
 
     return null;
-  }
-
-  static _categoryFromPlaylistName(name) {
-    const match = name.match(/^Atmosphera\s*—\s*(\w+)\s*(?:\(([^)]+)\))?$/);
-    if (!match) return null;
-    const type = match[1].toLowerCase();
-    const detail = match[2]?.toLowerCase().replace(/\s+/g, "-") || "";
-    return detail ? `${type}-${detail}` : type;
   }
 
   static findAnyTrack(preferredCategory = null) {
@@ -919,7 +1016,6 @@ class PlaylistCacheManager {
 
   static async saveTrack(category, track) {
     const folder = game.settings.get(MODULE_ID, "audioFolder") || "atmosphera";
-    // Extract top-level type: "combat-undead-aberration" → "combat", "sting-victory" → "stings"
     const topType = category.split("-")[0] || "misc";
     const subFolder = topType === "sting" ? "stings" : topType;
     const dirPath = `${folder}/${subFolder}`;
@@ -943,17 +1039,17 @@ class PlaylistCacheManager {
       filePath = track.url;
     }
 
+    // Use consolidated playlist
     const playlistName = this._playlistName(category);
     let playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist) {
       playlist = await Playlist.create({
         name: playlistName, mode: CONST.PLAYLIST_MODES.SEQUENTIAL,
-        description: `Auto-generated by Atmosphera for "${category}"`, playing: false,
-        flags: { [MODULE_ID]: { managed: true, category: category } }
+        description: `Auto-generated by Atmosphera`, playing: false,
+        flags: { [MODULE_ID]: { managed: true } }
       });
     } else if (!playlist.getFlag(MODULE_ID, "managed")) {
       await playlist.setFlag(MODULE_ID, "managed", true);
-      await playlist.setFlag(MODULE_ID, "category", category);
     }
 
     await playlist.createEmbeddedDocuments("PlaylistSound", [{
@@ -998,46 +1094,67 @@ class PlaylistCacheManager {
     const library = {};
     const playlists = game.playlists?.filter(p => p.name.startsWith(this.PLAYLIST_PREFIX)) || [];
     for (const playlist of playlists) {
-      const cat = this._categoryFromPlaylistName(playlist.name) || playlist.name;
-      library[cat] = [...playlist.sounds].map(s => ({
-        name: s.name, path: s.path, playing: s.playing
-      }));
+      for (const sound of playlist.sounds) {
+        const cat = sound.getFlag(MODULE_ID, "category") || "unknown";
+        if (!library[cat]) library[cat] = [];
+        library[cat].push({
+          name: sound.name, path: sound.path, playing: sound.playing
+        });
+      }
     }
     return library;
   }
 
+  /**
+   * Consolidated playlist naming: at most 2 playlists.
+   * Combat categories → "🎵 Atmosphera — Combat"
+   * Everything else → "🎵 Atmosphera — Ambient"
+   */
   static _playlistName(category) {
-    const parts = category.split("-");
-    const type = (parts[0] || "misc").replace(/^\w/, c => c.toUpperCase());
-    const detail = parts.slice(1).join(" ").replace(/^\w/, c => c.toUpperCase()) || "";
-    return detail ? `${this.PLAYLIST_PREFIX} — ${type} (${detail})` : `${this.PLAYLIST_PREFIX} — ${type}`;
+    const topType = (category.split("-")[0] || "ambient").toLowerCase();
+    if (topType === "combat" || topType === "boss") {
+      return `${this.PLAYLIST_PREFIX} — Combat`;
+    }
+    if (topType === "sting") {
+      return `${this.PLAYLIST_PREFIX} — Stings`;
+    }
+    return `${this.PLAYLIST_PREFIX} — Ambient`;
   }
 }
 
-/* ──────────────────────────── CONTROL PANEL ──────────────────────────── */
+/* ──────────────────────────── CONTROL PANEL (ApplicationV2) ──────────────── */
 
-class AtmospheraPanel extends Application {
-  static get defaultOptions() {
-    return foundry.utils.mergeObject(super.defaultOptions, {
-      id: "atmosphera-panel",
+class AtmospheraPanel extends foundry.applications.api.HandlebarsApplicationMixin(
+  foundry.applications.api.ApplicationV2
+) {
+  static DEFAULT_OPTIONS = {
+    id: "atmosphera-panel",
+    window: {
       title: "🎵 Atmosphera",
-      template: undefined,
-      popOut: true,
+      resizable: false
+    },
+    position: {
       width: 360,
       height: "auto",
       top: 80,
-      left: 20,
-      classes: ["atmosphera-panel"],
-      resizable: false
-    });
-  }
+      left: 20
+    },
+    classes: ["atmosphera-panel"]
+  };
 
-  constructor(controller) {
-    super();
+  static PARTS = {
+    main: {
+      template: undefined // We use inline rendering
+    }
+  };
+
+  constructor(controller, options = {}) {
+    super(options);
     this.controller = controller;
   }
 
-  async _renderInner() {
+  /** Override _renderHTML to provide inline HTML instead of a template file. */
+  async _renderHTML(_context, _options) {
     const c = this.controller;
     const isAuto = c.autoMode;
     const isPlaying = FoundryPlaylistManager.isPlaying;
@@ -1051,7 +1168,10 @@ class AtmospheraPanel extends Application {
     const preloadStatus = c._preloadStatus
       ? `<div class="atmo-preload-status">⏳ Preloading: ${c._preloadStatus}</div>` : "";
 
-    const html = $(`
+    const cooldownSec = game.settings.get(MODULE_ID, "generationCooldown");
+    const refreshMin = game.settings.get(MODULE_ID, "sceneRefreshInterval");
+
+    const htmlString = `
       <div class="atmosphera-controls">
         <div class="atmo-section">
           <label>Master</label>
@@ -1106,6 +1226,9 @@ class AtmospheraPanel extends Application {
                 <label style="font-size:11px;">Negative Tags</label>
                 <input type="text" id="atmo-gen-negative-tags" value="${game.settings.get(MODULE_ID, "negativeTags")}" style="width:100%;font-size:11px;" placeholder="vocals, singing, voice"/>
               </div>
+              <div style="margin-bottom:6px;">
+                <label style="font-size:11px;">Cooldown: ${cooldownSec}s | Scene refresh: ${refreshMin}min</label>
+              </div>
             </div>
           </details>
         </div>
@@ -1117,10 +1240,24 @@ class AtmospheraPanel extends Application {
           ${preloadStatus}
         </div>
       </div>
-    `);
+    `;
 
-    // Events
-    html.find("#atmo-enabled-toggle").on("click", () => {
+    const container = document.createElement("div");
+    container.innerHTML = htmlString.trim();
+    return { main: container };
+  }
+
+  /** Replace inner content of the app element. */
+  _replaceHTML(result, content, _options) {
+    const main = result.main;
+    content.replaceChildren(main);
+    this._activateListeners(content);
+  }
+
+  _activateListeners(html) {
+    const c = this.controller;
+
+    html.querySelector("#atmo-enabled-toggle")?.addEventListener("click", () => {
       const newVal = !game.settings.get(MODULE_ID, "enabled");
       game.settings.set(MODULE_ID, "enabled", newVal);
       if (newVal) {
@@ -1131,37 +1268,36 @@ class AtmospheraPanel extends Application {
       setTimeout(() => this.render(), 100);
     });
 
-    html.find("#atmo-auto-toggle").on("click", () => {
+    html.querySelector("#atmo-auto-toggle")?.addEventListener("click", () => {
       c.autoMode = !c.autoMode;
       if (c.autoMode) { c.manualMood = null; c.evaluateAndPlay(true); }
       this.render();
     });
 
-    html.find("#atmo-mood-select").on("change", (e) => {
+    html.querySelector("#atmo-mood-select")?.addEventListener("change", (e) => {
       if (e.target.value) c.setMood(e.target.value);
     });
 
-    html.find("#atmo-play").on("click", () => {
-      c.triggerGeneration(html.find("#atmo-prompt-display").val());
+    html.querySelector("#atmo-play")?.addEventListener("click", () => {
+      const textarea = html.querySelector("#atmo-prompt-display");
+      c.triggerGeneration(textarea?.value);
     });
 
-    html.find("#atmo-stop").on("click", () => { c.stop(); this.render(); });
+    html.querySelector("#atmo-stop")?.addEventListener("click", () => { c.stop(); this.render(); });
 
-    html.find("#atmo-volume").on("input", (e) => {
+    html.querySelector("#atmo-volume")?.addEventListener("input", (e) => {
       const v = parseFloat(e.target.value);
       FoundryPlaylistManager.setVolume(v);
       game.settings.set(MODULE_ID, "masterVolume", v);
     });
 
-    html.find("#atmo-gen-instrumental").on("change", (e) => {
+    html.querySelector("#atmo-gen-instrumental")?.addEventListener("change", (e) => {
       game.settings.set(MODULE_ID, "instrumental", e.target.checked);
     });
 
-    html.find("#atmo-gen-negative-tags").on("change", (e) => {
+    html.querySelector("#atmo-gen-negative-tags")?.addEventListener("change", (e) => {
       game.settings.set(MODULE_ID, "negativeTags", e.target.value);
     });
-
-    return html;
   }
 
   updateStatus(status) {
@@ -1218,16 +1354,24 @@ class AtmospheraController {
 
     // Track end detection interval
     this._endCheckInterval = null;
+
+    // Generation cooldown tracking
+    this._lastSuccessfulGeneration = 0;
+
+    // Scene variety timer
+    this._sceneRefreshTimer = null;
+    this._forceNewGeneration = false;
+    this._currentSceneId = null;
+
+    // Dedup detection
+    this._dedup = new PromptDeduplicator(5);
   }
 
   init() {
-    // Start track-end detection polling
     this._startEndDetection();
 
-    // Listen for playlist updates to detect when sounds stop
     Hooks.on("updatePlaylistSound", (sound, changed) => {
       if (!changed.playing && changed.playing === false) {
-        // A sound stopped playing — check if it was ours
         const playlist = sound.parent;
         if (playlist?.getFlag(MODULE_ID, "managed")) {
           console.log(`${MODULE_ID} | Atmosphera sound stopped: "${sound.name}"`);
@@ -1237,17 +1381,12 @@ class AtmospheraController {
     });
   }
 
-  /**
-   * Periodic check for track end — fallback if hooks don't fire reliably.
-   */
   _startEndDetection() {
     if (this._endCheckInterval) clearInterval(this._endCheckInterval);
     this._endCheckInterval = setInterval(() => {
       if (!game.settings.get(MODULE_ID, "enabled")) return;
       if (!this.autoMode) return;
 
-      // If we expect to be playing but nothing is playing, re-evaluate
-      // But back off if we keep failing (don't spam a dead API)
       if (this._lastCategory && !FoundryPlaylistManager.isPlaying) {
         const now = Date.now();
         const cooldown = this._consecutiveFailures ? Math.min(300000, 30000 * this._consecutiveFailures) : 0;
@@ -1256,21 +1395,40 @@ class AtmospheraController {
         this._lastCategory = null;
         this.evaluateAndPlay(true);
       }
-    }, 10000); // Check every 10 seconds
+    }, 10000);
   }
 
   _onTrackEnded() {
     if (!this.autoMode) return;
     if (!game.settings.get(MODULE_ID, "enabled")) return;
 
-    // Re-evaluate: if context changed, play new music
     const state = GameStateCollector.collect();
     const { category } = PromptBuilder.build(state, this.manualMood);
     if (category !== this._lastCategory) {
       this._lastCategory = null;
       this.evaluateAndPlay(true);
     }
-    // If same category, the repeat=true on the PlaylistSound handles looping
+  }
+
+  /** Start/reset scene variety timer */
+  _resetSceneRefreshTimer() {
+    if (this._sceneRefreshTimer) clearTimeout(this._sceneRefreshTimer);
+    const intervalMin = game.settings.get(MODULE_ID, "sceneRefreshInterval");
+    const intervalMs = intervalMin * 60 * 1000;
+    this._sceneRefreshTimer = setTimeout(() => {
+      console.log(`${MODULE_ID} | Scene variety timer fired — forcing new generation`);
+      this._forceNewGeneration = true;
+      this._lastCategory = null;
+      this.evaluateAndPlay(true);
+      // Reset for another cycle
+      this._resetSceneRefreshTimer();
+    }, intervalMs);
+  }
+
+  onSceneChange(sceneId) {
+    this._currentSceneId = sceneId;
+    this._forceNewGeneration = false;
+    this._resetSceneRefreshTimer();
   }
 
   openPanel() {
@@ -1328,6 +1486,46 @@ class AtmospheraController {
       console.log(`${MODULE_ID} | Generation in progress, queued: ${category}`);
       return;
     }
+
+    // Generation cooldown check
+    const cooldownMs = game.settings.get(MODULE_ID, "generationCooldown") * 1000;
+    const timeSinceLast = Date.now() - this._lastSuccessfulGeneration;
+    if (timeSinceLast < cooldownMs) {
+      // Still in cooldown — try to play from cache instead
+      const cached = PlaylistCacheManager.findCached(category, prompt);
+      if (cached) {
+        console.log(`${MODULE_ID} | Cooldown active (${Math.round((cooldownMs - timeSinceLast) / 1000)}s remaining), playing cached`);
+        this._setStatus("Playing (cooldown — cached)");
+        this.currentTrackInfo = category;
+        if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
+        const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
+        const volume = game.settings.get(MODULE_ID, "masterVolume");
+        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, title, prompt });
+        if (this.panel) this.panel.render();
+        return;
+      }
+      console.log(`${MODULE_ID} | Cooldown active but no cache — skipping generation`);
+      this._setStatus(`Cooldown (${Math.round((cooldownMs - timeSinceLast) / 1000)}s remaining)`);
+      return;
+    }
+
+    // Dedup detection: if prompt is very similar to recent ones and we have cache, use cache
+    if (!this._forceNewGeneration && this._dedup.isSimilar(prompt)) {
+      const cached = PlaylistCacheManager.findCached(category, prompt);
+      if (cached) {
+        console.log(`${MODULE_ID} | Dedup: prompt too similar to recent, using cache`);
+        this._setStatus("Playing (dedup — cached)");
+        this.currentTrackInfo = category;
+        if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
+        const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
+        const volume = game.settings.get(MODULE_ID, "masterVolume");
+        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, title, prompt });
+        if (this.panel) this.panel.render();
+        return;
+      }
+    }
+
+    this._forceNewGeneration = false;
     this._generating = true;
     this._setStatus("Generating…");
 
@@ -1338,7 +1536,6 @@ class AtmospheraController {
       this.currentTrackInfo = category;
       if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
 
-      // Play through Foundry's playlist system — syncs to all players
       const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
       const volume = game.settings.get(MODULE_ID, "masterVolume");
       await FoundryPlaylistManager.play(url, category, {
@@ -1349,22 +1546,21 @@ class AtmospheraController {
       });
 
       this._consecutiveFailures = 0;
+      this._lastSuccessfulGeneration = Date.now();
+      this._dedup.record(prompt);
       if (this.panel) this.panel.render();
     } catch (err) {
       this._consecutiveFailures = (this._consecutiveFailures || 0) + 1;
       this._lastFailTime = Date.now();
       console.error(`${MODULE_ID} | Generation error (failure #${this._consecutiveFailures}):`, err);
 
-      // If API is consistently failing, stop retrying aggressively
       if (this._consecutiveFailures >= 3) {
         console.warn(`${MODULE_ID} | ${this._consecutiveFailures} consecutive failures — backing off. Check PiAPI key/connection.`);
         ui.notifications.warn(`Atmosphera: API unavailable (${this._consecutiveFailures} failures). Will retry in ${this._consecutiveFailures * 30}s.`);
       }
 
-      // Check if we have a pending task ID we can keep polling for
       const pendingIds = err._taskId ? [err._taskId] : null;
 
-      // Play fallback immediately so there's no silence
       const fallback = PlaylistCacheManager.findAnyTrack(category);
       if (fallback) {
         console.log(`${MODULE_ID} | Playing fallback while waiting: "${fallback.category}"`);
@@ -1382,7 +1578,6 @@ class AtmospheraController {
         this._setStatus(`Generating — please wait…`);
       }
 
-      // If we have pending IDs, keep polling in background and swap when ready
       if (pendingIds && pendingIds.length) {
         console.log(`${MODULE_ID} | Continuing background poll for ${pendingIds.join(",")}`);
         this._backgroundPoll(pendingIds, prompt, title, category);
@@ -1406,7 +1601,6 @@ class AtmospheraController {
   async _backgroundPoll(ids, prompt, title, category) {
     const taskId = ids[0];
     if (!taskId) return;
-    // Keep trying to poll for completed task even after main generation errored
     for (let i = 0; i < 180; i++) {
       await new Promise(r => setTimeout(r, 10000));
       try {
@@ -1428,6 +1622,8 @@ class AtmospheraController {
           const volume = game.settings.get(MODULE_ID, "masterVolume");
           await FoundryPlaylistManager.play(url, category, { volume, fadeDuration, title, prompt });
           this._setStatus("Playing");
+          this._lastSuccessfulGeneration = Date.now();
+          this._dedup.record(prompt);
           this.currentTrackInfo = category;
           if (this.panel) this.panel.render();
           return;
@@ -1631,7 +1827,7 @@ class AtmospheraSetupWizard {
       <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.3.0:</strong> Now using PiAPI's Udio integration — no self-hosted proxy needed!</p>
+      <p><strong>New in v0.4.0:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
       <p>You'll need:</p>
       <ul>
         <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
@@ -1755,7 +1951,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.3.0`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.4.0`);
 });
 
 Hooks.once("ready", () => {
@@ -1777,7 +1973,6 @@ Hooks.once("ready", () => {
       openSetup: () => AtmospheraSetupWizard.open(controller),
       getLibrary: () => PlaylistCacheManager.getLibrary(),
 
-      // Power-user / internal access
       controller,
       evaluate: () => controller.evaluateAndPlay(true),
       getCredits: () => UdioClient.getCredits(),
@@ -1824,11 +2019,9 @@ Hooks.once("ready", () => {
     }
   })();
 
-  // ── Scene control button (v13) ──
-  // ── Scene control button — try multiple approaches for v13 compat ──
+  // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
     try {
-      // v13 object-style
       if (!Array.isArray(controls)) {
         const group = controls.sounds || controls.ambient;
         if (group && group.tools) {
@@ -1843,7 +2036,6 @@ Hooks.once("ready", () => {
           };
         }
       } else {
-        // v12 array-style fallback
         const group = controls.find(c => c.name === "sounds" || c.name === "ambient");
         if (group) {
           group.tools.push({
@@ -1895,6 +2087,9 @@ Hooks.once("ready", () => {
     setTimeout(() => {
       console.log(`${MODULE_ID} | Auto-starting on world ready`);
       controller.evaluateAndPlay(true);
+      // Start scene refresh timer for current scene
+      const sceneId = canvas?.scene?.id;
+      if (sceneId) controller.onSceneChange(sceneId);
     }, 2000);
   }
 
@@ -1906,6 +2101,9 @@ Hooks.once("ready", () => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
 
     const sceneId = canvas?.scene?.id;
+
+    // Reset scene variety timer on scene change
+    if (sceneId) controller.onSceneChange(sceneId);
 
     if (sceneId && !controller._prewarmedScenes.has(sceneId)) {
       controller.prewarmScene(sceneId);
@@ -2029,5 +2227,5 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v0.3.0 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.4.0 ready — music syncs to all players via Foundry playlists.");
 });
