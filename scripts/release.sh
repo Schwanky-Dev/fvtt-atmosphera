@@ -40,7 +40,8 @@ print(f'  download: {dl} ✓')
 
 # 3. Syntax check main.js
 echo "[3/7] Syntax checking main.js..."
-node -c scripts/main.js
+NODE="${NODE:-node}"
+$NODE -c scripts/main.js
 echo "  syntax OK ✓"
 
 # 4. Git commit and push
