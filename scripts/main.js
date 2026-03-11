@@ -116,19 +116,29 @@ const MOOD_DESCRIPTORS = [
   "Crimson", "Verdant", "Gilded", "Sunken", "Hollow", "Ember"
 ];
 
+/* ──────────────────────────── DEFAULT SCENE NAMES (skip generation) ──────── */
+
+const DEFAULT_SCENE_NAMES = new Set([
+  "foundry virtual tabletop",
+  "default scene",
+  "new scene",
+  "untitled scene",
+  "test scene"
+]);
+
 /* ──────────────────────────── RESOURCE THRESHOLDS ──────────────────────────── */
 
 const RESOURCE_DESCRIPTORS = {
   fresh: { min: 0.75, prompt: "well-rested, prepared, confident" },
   moderate: { min: 0.40, prompt: null },
-  low: { min: 0.15, prompt: "weary, strained, running low on resources" },
-  critical: { min: 0, prompt: "exhausted, desperate, on the edge of defeat" }
+  low: { min: 0.15, prompt: "tension rising, resources dwindling, urgent" },
+  critical: { min: 0, prompt: "desperate, last reserves, do-or-die intensity" }
 };
 
 const HP_DESCRIPTORS = {
   healthy: { min: 0.75, prompt: null },
-  bloodied: { min: 0.25, prompt: "wounded" },
-  critical: { min: 0, prompt: "near death, critical" }
+  bloodied: { min: 0.25, prompt: "intense, stakes rising, wounded but fighting" },
+  critical: { min: 0, prompt: "dire peril, last stand, heroic struggle, adrenaline" }
 };
 
 function getDescriptor(pct, table) {
@@ -1020,9 +1030,11 @@ class PlaylistCacheManager {
     const subFolder = topType === "sting" ? "stings" : topType;
     const dirPath = `${folder}/${subFolder}`;
 
-    try { await FilePicker.browse("data", dirPath); } catch {
-      try { await FilePicker.browse("data", folder); } catch { await FilePicker.createDirectory("data", folder); }
-      await FilePicker.createDirectory("data", dirPath);
+    const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+
+    try { await FP.browse("data", dirPath); } catch {
+      try { await FP.browse("data", folder); } catch { await FP.createDirectory("data", folder); }
+      await FP.createDirectory("data", dirPath);
     }
 
     const filename = `${track.id}.mp3`;
@@ -1032,7 +1044,7 @@ class PlaylistCacheManager {
       if (!audioResp.ok) throw new Error(`Download failed: ${audioResp.status}`);
       const blob = await audioResp.blob();
       const file = new File([blob], filename, { type: "audio/mpeg" });
-      const uploadResult = await FilePicker.upload("data", dirPath, file);
+      const uploadResult = await FP.upload("data", dirPath, file);
       filePath = uploadResult.path;
     } catch (e) {
       console.warn(`${MODULE_ID} | Failed to download/upload track, using remote URL`, e);
@@ -1339,12 +1351,7 @@ class AtmospheraController {
     this._preloadStatus = null;
     this._consecutiveFailures = 0;
     this._lastFailTime = null;
-    this._preloadPromises = new Map();
     this._stingSavedCategory = null;
-
-    // Background pre-generation for combat stings
-    this._victoryPromise = null;
-    this._defeatPromise = null;
 
     // Smart combat re-evaluation
     this._lastCombatSignature = "";
@@ -1453,6 +1460,16 @@ class AtmospheraController {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
 
     const state = GameStateCollector.collect();
+
+    // Skip default/placeholder scenes for ambient (not combat)
+    if (!state.combat.active && state.scene.name) {
+      const nameLower = state.scene.name.toLowerCase().trim();
+      if (DEFAULT_SCENE_NAMES.has(nameLower)) {
+        console.log(`${MODULE_ID} | Skipping default scene: "${state.scene.name}"`);
+        return;
+      }
+    }
+
     const { prompt, category, title } = PromptBuilder.build(state, this.manualMood);
 
     this.currentPrompt = prompt;
@@ -1639,43 +1656,6 @@ class AtmospheraController {
     console.warn(`${MODULE_ID} | Background poll timed out after 30 minutes`);
   }
 
-  _pregenerateStings() {
-    const victory = PromptBuilder.buildSting("victory");
-    const defeat = PromptBuilder.buildSting("defeat");
-
-    this._victoryPromise = this._doGenerateOnly(victory.prompt, victory.title, victory.category);
-    this._defeatPromise = new Promise(r => setTimeout(r, 10000))
-      .then(() => this._doGenerateOnly(defeat.prompt, defeat.title, defeat.category));
-
-    this._preloadStatus = "victory & defeat stings";
-    if (this.panel) this.panel.render();
-
-    Promise.allSettled([this._victoryPromise, this._defeatPromise]).then(() => {
-      this._preloadStatus = null;
-      if (this.panel) this.panel.render();
-    });
-  }
-
-  preload(categories) {
-    for (const cat of categories) {
-      if (this._preloadPromises.has(cat)) continue;
-      if (PlaylistCacheManager.findCached(cat)) continue;
-
-      const { prompt, title } = PromptBuilder.buildSting(cat.replace("sting-", ""));
-      this._preloadStatus = cat;
-      if (this.panel) this.panel.render();
-
-      const p = PlaylistCacheManager.preload(prompt, title, cat).finally(() => {
-        this._preloadPromises.delete(cat);
-        if (this._preloadPromises.size === 0) {
-          this._preloadStatus = null;
-          if (this.panel) this.panel.render();
-        }
-      });
-      this._preloadPromises.set(cat, p);
-    }
-  }
-
   async playSting(type) {
     const { prompt, category, title } = PromptBuilder.buildSting(type);
     this.currentPrompt = prompt;
@@ -1684,29 +1664,7 @@ class AtmospheraController {
     this._stingSavedCategory = this._lastCategory;
     this._lastCategory = category;
 
-    const pregenPromise = type === "victory" ? this._victoryPromise : this._defeatPromise;
-    if (pregenPromise) {
-      try {
-        const pregenUrl = await pregenPromise;
-        if (pregenUrl) {
-          console.log(`${MODULE_ID} | Using pre-generated ${type} sting`);
-          this._setStatus("Playing (pre-generated)");
-          this.currentTrackInfo = category;
-          if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
-
-          const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
-          const volume = game.settings.get(MODULE_ID, "masterVolume");
-          await FoundryPlaylistManager.play(pregenUrl, category, { volume, fadeDuration, title, prompt });
-
-          if (this.panel) this.panel.render();
-          this._scheduleStingRevert();
-          return;
-        }
-      } catch {
-        // Pre-gen failed, fall through
-      }
-    }
-
+    // Generate on-demand (uses cache if available)
     await this._doGenerate(prompt, title, category);
     this._scheduleStingRevert();
   }
@@ -2128,7 +2086,6 @@ Hooks.once("ready", () => {
 
     controller._lastCombatSignature = GameStateCollector.combatSignature();
     controller.evaluateAndPlay(true);
-    controller._pregenerateStings();
   });
 
   Hooks.on("updateCombat", (combat, changed) => {
