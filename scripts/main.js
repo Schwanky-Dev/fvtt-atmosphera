@@ -430,9 +430,13 @@ class GameStateCollector {
   static combatSignature() {
     const combat = this._collectCombat();
     if (!combat.active) return "";
+    const alive = combat.creatures.filter(c => !c.isDead);
     const types = combat.creatureTypes.slice().sort().join(",");
     const bossFlag = combat.hasBoss ? "|BOSS" : "";
-    return `${types}${bossFlag}`;
+    const aliveCount = alive.length;
+    const bossAlive = combat.bosses.filter(b => !b.isDead).length;
+    // Include alive counts so monster deaths change the signature
+    return `${types}|${aliveCount}e|${bossAlive}b${bossFlag}`;
   }
 }
 
