@@ -505,19 +505,26 @@ class UdioClient {
       }
 
       const status = result?.data?.status;
-      if (status === "success") {
-        const output = result.data.task_result?.output;
-        // output may be a URL string, an object with audio_url, or an array of tracks
+      if (status === "completed" || status === "success") {
+        // PiAPI Udio output: data.output.songs[] with song_path, title, duration
+        const output = result.data.output || result.data.task_result?.output;
         let audioUrl, trackTitle, duration;
-        if (typeof output === "string") {
+
+        // Handle songs array (Udio format)
+        if (output?.songs && Array.isArray(output.songs) && output.songs.length > 0) {
+          const track = output.songs[0];
+          audioUrl = track.song_path || track.audio_url || track.url;
+          trackTitle = track.title;
+          duration = track.duration;
+        } else if (typeof output === "string") {
           audioUrl = output;
         } else if (Array.isArray(output) && output.length > 0) {
           const track = output[0];
-          audioUrl = track.audio_url || track.url || track;
+          audioUrl = track.song_path || track.audio_url || track.url || track;
           trackTitle = track.title;
           duration = track.duration;
         } else if (output && typeof output === "object") {
-          audioUrl = output.audio_url || output.url;
+          audioUrl = output.song_path || output.audio_url || output.url;
           trackTitle = output.title;
           duration = output.duration;
         }
@@ -1405,12 +1412,13 @@ class AtmospheraController {
       try {
         const result = await UdioClient.pollTask(taskId);
         const status = result?.data?.status;
-        if (status === "success") {
-          const output = result.data.task_result?.output;
+        if (status === "completed" || status === "success") {
+          const output = result.data.output || result.data.task_result?.output;
           let audioUrl;
-          if (typeof output === "string") audioUrl = output;
-          else if (Array.isArray(output) && output.length > 0) audioUrl = output[0].audio_url || output[0].url || output[0];
-          else if (output && typeof output === "object") audioUrl = output.audio_url || output.url;
+          if (output?.songs && Array.isArray(output.songs) && output.songs.length > 0) audioUrl = output.songs[0].song_path || output.songs[0].audio_url || output.songs[0].url;
+          else if (typeof output === "string") audioUrl = output;
+          else if (Array.isArray(output) && output.length > 0) audioUrl = output[0].song_path || output[0].audio_url || output[0].url || output[0];
+          else if (output && typeof output === "object") audioUrl = output.song_path || output.audio_url || output.url;
 
           if (!audioUrl) { console.warn(`${MODULE_ID} | Background poll: no audio URL in output`); return; }
 
