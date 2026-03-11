@@ -275,8 +275,8 @@ function registerSettings() {
   });
 
   s("generationCooldown", {
-    name: "Generation Cooldown (seconds)",
-    hint: "Minimum time between successful generations to avoid wasting credits.",
+    name: "Max Cooldown (seconds)",
+    hint: "Maximum cooldown when rapid switching is detected. Normal scene changes generate immediately — cooldown only activates when 3+ generation requests happen within 60 seconds.",
     scope: "world", config: true, type: Number, default: 180,
     range: { min: 60, max: 600, step: 10 }
   });
@@ -1372,8 +1372,10 @@ class AtmospheraController {
     // Track end detection interval
     this._endCheckInterval = null;
 
-    // Generation cooldown tracking
+    // Adaptive generation cooldown — detects rapid switching vs normal transitions
     this._lastSuccessfulGeneration = 0;
+    this._generationTimestamps = []; // recent generation request timestamps
+    this._adaptiveCooldownUntil = 0; // timestamp when adaptive cooldown expires
 
     // Scene variety timer
     this._sceneRefreshTimer = null;
@@ -1574,14 +1576,25 @@ class AtmospheraController {
       return;
     }
 
-    // Generation cooldown check
-    const cooldownMs = game.settings.get(MODULE_ID, "generationCooldown") * 1000;
-    const timeSinceLast = Date.now() - this._lastSuccessfulGeneration;
-    if (timeSinceLast < cooldownMs) {
-      // Still in cooldown — try to play from cache instead
+    // Adaptive cooldown: detect rapid switching vs normal transitions
+    // Normal transition (scene change, combat start) = generate immediately
+    // Rapid switching (3+ requests in 60s) = throttle to prevent credit waste
+    const now = Date.now();
+    const RAPID_WINDOW = 60000; // 60s window to detect rapid switching
+    const RAPID_THRESHOLD = 3;  // 3+ generation requests in window = rapid
+    const maxCooldownMs = game.settings.get(MODULE_ID, "generationCooldown") * 1000;
+
+    // Track this generation request
+    this._generationTimestamps.push(now);
+    // Trim old timestamps outside the window
+    this._generationTimestamps = this._generationTimestamps.filter(t => now - t < RAPID_WINDOW);
+
+    // Check if we're in an active adaptive cooldown
+    if (now < this._adaptiveCooldownUntil) {
+      const remaining = Math.round((this._adaptiveCooldownUntil - now) / 1000);
       const cached = PlaylistCacheManager.findCached(category, prompt);
       if (cached) {
-        console.log(`${MODULE_ID} | Cooldown active (${Math.round((cooldownMs - timeSinceLast) / 1000)}s remaining), playing cached`);
+        console.log(`${MODULE_ID} | Adaptive cooldown (${remaining}s remaining), playing cached`);
         this._setStatus("Playing (cooldown — cached)");
         this.currentTrackInfo = category;
         if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
@@ -1592,9 +1605,20 @@ class AtmospheraController {
         if (this.panel) this.panel.render();
         return;
       }
-      console.log(`${MODULE_ID} | Cooldown active but no cache — skipping generation`);
-      this._setStatus(`Cooldown (${Math.round((cooldownMs - timeSinceLast) / 1000)}s remaining)`);
+      console.log(`${MODULE_ID} | Adaptive cooldown (${remaining}s remaining), no cache — skipping`);
+      this._setStatus(`Cooldown (${remaining}s remaining)`);
       return;
+    }
+
+    // Detect rapid switching: if 3+ requests in 60s, activate adaptive cooldown
+    if (this._generationTimestamps.length >= RAPID_THRESHOLD) {
+      // Escalate: cooldown = min(maxCooldown, 60s * overshoot count)
+      const overshoot = this._generationTimestamps.length - RAPID_THRESHOLD + 1;
+      const cooldownMs = Math.min(maxCooldownMs, 60000 * overshoot);
+      this._adaptiveCooldownUntil = now + cooldownMs;
+      console.log(`${MODULE_ID} | Rapid switching detected (${this._generationTimestamps.length} requests in 60s), cooldown ${Math.round(cooldownMs / 1000)}s`);
+      // Still allow THIS generation through (it's the one that triggered the cooldown)
+      // but subsequent ones will be blocked
     }
 
     // Dedup detection: if prompt is very similar to recent ones and we have cache, use cache
