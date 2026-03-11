@@ -2064,36 +2064,21 @@ Hooks.once("ready", () => {
     }
   }
 
-  // ── Create macros on first run ──
-  (async () => {
-    try {
-      const setupDone = game.settings.get(MODULE_ID, "setupComplete");
-      if (setupDone && !game.macros?.find(m => m.name === "🎵 Atmosphera Panel")) {
-        const macros = [
-          { name: "🎵 Atmosphera Panel", command: 'game.modules.get("atmosphera").api.openPanel();', img: "icons/svg/sound.svg" },
-          { name: "🎵 Auto Mode", command: 'game.modules.get("atmosphera").api.setMood("auto"); ui.notifications.info("Atmosphera: Auto mode");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Tension", command: 'game.modules.get("atmosphera").api.setMood("tension");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Calm", command: 'game.modules.get("atmosphera").api.setMood("calm");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Epic", command: 'game.modules.get("atmosphera").api.setMood("epic");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Horror", command: 'game.modules.get("atmosphera").api.setMood("horror");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Mystery", command: 'game.modules.get("atmosphera").api.setMood("mystery");', img: "icons/svg/sound.svg" },
-          { name: "🎵 Stop Music", command: 'game.modules.get("atmosphera").api.stop();', img: "icons/svg/sound.svg" },
-        ];
-        let folder = game.folders?.find(f => f.name === "Atmosphera" && f.type === "Macro");
-        if (!folder) {
-          folder = await Folder.create({ name: "Atmosphera", type: "Macro", color: "#7a5ba6" });
-        }
-        for (const m of macros) {
-          if (!game.macros?.find(e => e.name === m.name)) {
-            await Macro.create({ ...m, type: "script", folder: folder.id });
-          }
-        }
-        console.log(`${MODULE_ID} | Created ${macros.length} hotbar macros in Atmosphera folder`);
-      }
-    } catch (e) {
-      console.warn(`${MODULE_ID} | Failed to create macros:`, e);
+  // ── Chat command: /atmosphera ──
+  Hooks.on("chatMessage", (_html, content, _msg) => {
+    const cmd = content.trim().toLowerCase();
+    if (cmd === "/atmosphera" || cmd === "/atmo") {
+      controller.panel ? controller.panel.render(true) : controller.openPanel();
+      return false; // prevent chat message from appearing
     }
-  })();
+    if (cmd.startsWith("/atmo ")) {
+      const mood = cmd.slice(6).trim();
+      if (mood === "stop") { controller.stop(); ui.notifications.info("Atmosphera: Stopped"); }
+      else if (mood === "panel") { controller.openPanel(); }
+      else { controller.setMood(mood); ui.notifications.info(`Atmosphera: Mood → ${mood}`); }
+      return false;
+    }
+  });
 
   // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
