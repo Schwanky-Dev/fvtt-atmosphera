@@ -529,8 +529,14 @@ class PromptBuilder {
   }
 
   static _buildAmbientCategory(scene) {
-    if (scene.keywords.length) return `ambient-${scene.keywords[0]}`;
-    if (scene.name) return `ambient-${scene.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`;
+    // Use ALL matched keywords for a more specific category
+    if (scene.keywords.length) return `ambient-${scene.keywords.sort().join("-")}`;
+    // Use the exact scene name as the category — each scene gets its own category
+    // This prevents fuzzy matching from playing the same track for different scenes
+    if (scene.name) {
+      const slug = scene.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40);
+      return `ambient-scene-${slug}`;
+    }
     return "ambient-general";
   }
 
@@ -966,8 +972,17 @@ class PlaylistCacheManager {
   }
 
   static _findFuzzy(category) {
+    // Don't fuzzy-match scene-specific categories — each scene should have unique music
+    // "ambient-scene-the-yawning-portal" should NOT match "ambient-scene-open-air-wilderness"
+    if (category.startsWith("ambient-scene-")) return null;
+
     const requestedKeywords = category.split("-").filter(Boolean);
     if (requestedKeywords.length === 0) return null;
+
+    // Exclude structural words that would cause false matches
+    const STRUCTURAL = new Set(["ambient", "combat", "boss", "scene", "sting", "general"]);
+    const meaningfulRequested = requestedKeywords.filter(kw => !STRUCTURAL.has(kw));
+    if (meaningfulRequested.length === 0) return null;
 
     const playlists = game.playlists?.filter(p =>
       p.name.startsWith(this.PLAYLIST_PREFIX) && p.sounds.size > 0
@@ -979,11 +994,11 @@ class PlaylistCacheManager {
     for (const playlist of playlists) {
       for (const sound of playlist.sounds) {
         const soundCat = sound.getFlag(MODULE_ID, "category") || "";
-        const candidateKeywords = soundCat.split("-").filter(Boolean);
+        const candidateKeywords = soundCat.split("-").filter(Boolean).filter(kw => !STRUCTURAL.has(kw));
         if (!candidateKeywords.length) continue;
 
-        const overlap = requestedKeywords.filter(kw => candidateKeywords.includes(kw)).length;
-        const score = overlap / requestedKeywords.length;
+        const overlap = meaningfulRequested.filter(kw => candidateKeywords.includes(kw)).length;
+        const score = overlap / meaningfulRequested.length;
 
         if (score > bestScore) {
           bestScore = score;
@@ -2064,21 +2079,48 @@ Hooks.once("ready", () => {
     }
   }
 
-  // ── Chat command: /atmosphera ──
+  // ── Chat commands: /atmo, /atmosphera ──
   Hooks.on("chatMessage", (_html, content, _msg) => {
     const cmd = content.trim().toLowerCase();
     if (cmd === "/atmosphera" || cmd === "/atmo") {
       controller.panel ? controller.panel.render(true) : controller.openPanel();
-      return false; // prevent chat message from appearing
+      return false;
     }
     if (cmd.startsWith("/atmo ")) {
       const mood = cmd.slice(6).trim();
       if (mood === "stop") { controller.stop(); ui.notifications.info("Atmosphera: Stopped"); }
       else if (mood === "panel") { controller.openPanel(); }
-      else { controller.setMood(mood); ui.notifications.info(`Atmosphera: Mood → ${mood}`); }
+      else { controller.setMood(mood); ui.notifications.info(`Atmosphera: Mood set to ${mood}`); }
       return false;
     }
   });
+
+  // ── Create panel macro on first run ──
+  // Foundry v13 has a socket bug with script macros — we set scope and author
+  // explicitly to avoid null field issues in the onack handler.
+  (async () => {
+    try {
+      const setupDone = game.settings.get(MODULE_ID, "setupComplete");
+      if (setupDone && !game.macros?.find(m => m.name === "Atmosphera Panel")) {
+        let folder = game.folders?.find(f => f.name === "Atmosphera" && f.type === "Macro");
+        if (!folder) {
+          folder = await Folder.create({ name: "Atmosphera", type: "Macro", color: "#7a5ba6" });
+        }
+        await Macro.create({
+          name: "Atmosphera Panel",
+          type: "script",
+          scope: "global",
+          author: game.user.id,
+          command: 'game.modules.get("atmosphera").api.openPanel();',
+          img: "icons/svg/sound.svg",
+          folder: folder.id,
+        });
+        console.log(`${MODULE_ID} | Created Atmosphera Panel macro`);
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Failed to create macro:`, e);
+    }
+  })();
 
   // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
