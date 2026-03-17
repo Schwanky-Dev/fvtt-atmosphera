@@ -1,6 +1,6 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.5.2 — ApplicationV2 migration, consolidated playlists, generation cooldown,
+ * v0.5.3 — ApplicationV2 migration, consolidated playlists, generation cooldown,
  *           scene variety timer, richer prompts, dedup detection.
  */
 
@@ -626,10 +626,8 @@ class PromptBuilder {
   }
 
   static _buildAmbientCategory(scene) {
-    // Use ALL matched keywords for a more specific category
-    if (scene.keywords.length) return `ambient-${scene.keywords.sort().join("-")}`;
-    // Use the exact scene name as the category — each scene gets its own category
-    // This prevents fuzzy matching from playing the same track for different scenes
+    // ALWAYS use scene-specific category — every scene gets unique audio
+    // Keywords still influence the PROMPT but not the cache bucket
     if (scene.name) {
       const slug = scene.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40);
       return `ambient-scene-${slug}`;
@@ -729,6 +727,14 @@ class UdioClient {
     } finally {
       clearTimeout(timeout);
     }
+    // Retry once on 502/503 (PiAPI intermittent errors)
+    if ((resp.status === 502 || resp.status === 503) && !this._retrying) {
+      this._retrying = true;
+      console.warn(`${MODULE_ID} | PiAPI returned ${resp.status}, retrying in 3s...`);
+      await new Promise(r => setTimeout(r, 3000));
+      try { return await this.createTask(prompt); } finally { this._retrying = false; }
+    }
+    this._retrying = false;
     if (!resp.ok) throw new Error(`PiAPI create task failed: ${resp.status}`);
     const data = await resp.json();
     if (data.code !== 200) throw new Error(`PiAPI create task error: ${JSON.stringify(data)}`);
@@ -2187,7 +2193,7 @@ class AtmospheraSetupWizard {
       <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.5.2:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
+      <p><strong>New in v0.5.3:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
       <p>You'll need:</p>
       <ul>
         <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
@@ -2311,7 +2317,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.5.2`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.5.3`);
 });
 
 Hooks.once("ready", () => {
@@ -2613,7 +2619,7 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v0.5.2 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.5.3 ready — music syncs to all players via Foundry playlists.");
 
   // ── Auto-create control panel macro ──
   (async () => {
