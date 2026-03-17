@@ -1,6 +1,6 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.4.0 — ApplicationV2 migration, consolidated playlists, generation cooldown,
+ * v0.4.7 — ApplicationV2 migration, consolidated playlists, generation cooldown,
  *           scene variety timer, richer prompts, dedup detection.
  */
 
@@ -598,7 +598,19 @@ class UdioClient {
   }
 
   static async createTask(prompt) {
-    const resp = await fetch("https://api.piapi.ai/api/v1/task", {
+    const apiKey = this._apiKey();
+    if (!apiKey) {
+      ui.notifications.error("Atmosphera: No PiAPI API key configured. Use /atmo setup to configure one.");
+      throw new Error("PiAPI API key is not configured");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    let resp;
+    try {
+      resp = await fetch("https://api.piapi.ai/api/v1/task", {
+        signal: controller.signal,
       method: "POST",
       headers: this._headers(),
       body: JSON.stringify({
@@ -616,6 +628,9 @@ class UdioClient {
         }
       })
     });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!resp.ok) throw new Error(`PiAPI create task failed: ${resp.status}`);
     const data = await resp.json();
     if (data.code !== 200) throw new Error(`PiAPI create task error: ${JSON.stringify(data)}`);
@@ -2014,7 +2029,7 @@ class AtmospheraSetupWizard {
       <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.4.0:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
+      <p><strong>New in v0.4.7:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
       <p>You'll need:</p>
       <ul>
         <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
@@ -2138,7 +2153,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.4.0`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.4.7`);
 });
 
 Hooks.once("ready", () => {
@@ -2180,15 +2195,38 @@ Hooks.once("ready", () => {
   // ── Chat commands: /atmo, /atmosphera ──
   Hooks.on("chatMessage", (_html, content, _msg) => {
     const cmd = content.trim().toLowerCase();
+
+    // Exact bare command — open panel
     if (cmd === "/atmosphera" || cmd === "/atmo") {
       controller.panel ? controller.panel.render(true) : controller.openPanel();
       return false;
     }
-    if (cmd.startsWith("/atmo ")) {
-      const mood = cmd.slice(6).trim();
-      if (mood === "stop") { controller.stop(); ui.notifications.info("Atmosphera: Stopped"); }
-      else if (mood === "panel") { controller.openPanel(); }
-      else { controller.setMood(mood); ui.notifications.info(`Atmosphera: Mood set to ${mood}`); }
+
+    // /atmosphera <subcommand> or /atmo <subcommand>
+    const atmoMatch = cmd.match(/^\/(atmosphera|atmo)\s+(.+)$/);
+    if (atmoMatch) {
+      const sub = atmoMatch[2].trim();
+      // Subcommands: auth, setup, help, stop, panel — BEFORE mood fallback
+      if (sub === "auth" || sub === "setup") {
+        AtmospheraSetupWizard.open(controller);
+        return false;
+      }
+      if (sub === "help") {
+        ui.notifications.info("Atmosphera commands: /atmo, /atmo stop, /atmo panel, /atmo auth, /atmo setup, /atmo <mood>");
+        return false;
+      }
+      if (sub === "stop") {
+        controller.stop();
+        ui.notifications.info("Atmosphera: Stopped");
+        return false;
+      }
+      if (sub === "panel") {
+        controller.openPanel();
+        return false;
+      }
+      // Fallthrough: treat as mood name
+      controller.setMood(sub);
+      ui.notifications.info(`Atmosphera: Mood set to ${sub}`);
       return false;
     }
   });
@@ -2241,19 +2279,6 @@ Hooks.once("ready", () => {
     btn.addEventListener("click", () => controller.openPanel());
     const target = html[0] || html;
     target.appendChild(btn);
-  });
-
-  // ── Chat commands ──
-  Hooks.on("chatMessage", (_html, content) => {
-    const cmd = content.trim().toLowerCase();
-    if (cmd === "/atmosphera") {
-      controller.openPanel();
-      return false;
-    }
-    if (cmd === "/atmosphera auth" || cmd === "/atmosphera setup") {
-      AtmospheraSetupWizard.open(controller);
-      return false;
-    }
   });
 
   // ════════════════════════════════════════════════════════════════
@@ -2399,9 +2424,11 @@ Hooks.once("ready", () => {
       controller.evaluateAndPlay(true);
     } else {
       console.log(`${MODULE_ID} | Disabled — stopping`);
+      if (controller._endCheckInterval) { clearInterval(controller._endCheckInterval); controller._endCheckInterval = null; }
+      if (controller._sceneRefreshTimer) { clearTimeout(controller._sceneRefreshTimer); controller._sceneRefreshTimer = null; }
       controller.stop();
     }
   });
 
-  ui.notifications.info("Atmosphera v0.4.0 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.4.7 ready — music syncs to all players via Foundry playlists.");
 });
