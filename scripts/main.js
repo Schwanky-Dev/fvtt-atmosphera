@@ -1,6 +1,6 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.5.1 — ApplicationV2 migration, consolidated playlists, generation cooldown,
+ * v0.5.2 — ApplicationV2 migration, consolidated playlists, generation cooldown,
  *           scene variety timer, richer prompts, dedup detection.
  */
 
@@ -2187,7 +2187,7 @@ class AtmospheraSetupWizard {
       <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.5.1:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
+      <p><strong>New in v0.5.2:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
       <p>You'll need:</p>
       <ul>
         <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
@@ -2311,7 +2311,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.5.1`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.5.2`);
 });
 
 Hooks.once("ready", () => {
@@ -2613,5 +2613,28 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v0.5.1 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.5.2 ready — music syncs to all players via Foundry playlists.");
+
+  // ── Auto-create control panel macro ──
+  (async () => {
+    try {
+      const macroName = "Atmosphera Panel";
+      const existing = game.macros?.find(m => m.name === macroName && m.getFlag(MODULE_ID, "autoCreated"));
+      if (!existing && game.user.isGM) {
+        const macro = await Macro.create({
+          name: macroName,
+          type: "script",
+          command: `const api = game.modules.get("atmosphera")?.api;\nif (api) { api.openPanel(); }\nelse { ui.notifications.warn("Atmosphera is not active."); }`,
+          img: "icons/svg/sound.svg",
+          flags: { [MODULE_ID]: { autoCreated: true } }
+        });
+        if (macro) {
+          console.log(`${MODULE_ID} | Created "Atmosphera Panel" macro`);
+        }
+      }
+    } catch (err) {
+      // Foundry v13 socket ack bug may fire here — macro still creates successfully
+      console.warn(`${MODULE_ID} | Macro creation warning (likely harmless):`, err.message);
+    }
+  })();
 });
