@@ -405,7 +405,7 @@ class GameStateCollector {
   }
 
   static _collectScene() {
-    const scene = canvas?.scene;
+    const scene = game.scenes?.active;
     if (!scene) return { name: "", darkness: 0, weather: null, keywords: [], environments: [], active: false };
 
     const name = scene.name || "";
@@ -444,7 +444,8 @@ class GameStateCollector {
 
 class PromptBuilder {
 
-  static build(state, moodOverride = null) {
+  static build(state, moodOverride = null, hpContext = null) {
+    const hpLeadParts = [];  // HP descriptors placed FIRST for heavy influence
     const parts = [];
     const prefix = game.settings.get(MODULE_ID, "promptPrefix")?.trim();
 
@@ -467,16 +468,40 @@ class PromptBuilder {
       parts.push(this._buildAmbientPrompt(scene));
     }
 
-    const hpDesc = getDescriptor(party.hpPct, HP_DESCRIPTORS);
+    // HP as a MAJOR tone driver — not just an afterthought
+    const hpPct = party.hpPct;
+    const hpDesc = getDescriptor(hpPct, HP_DESCRIPTORS);
+
+    if (hpPct < 0.25) {
+      // Critical: place HP FIRST, add urgent modifiers, alter category
+      hpLeadParts.push("dire peril, last stand, heroic struggle, do-or-die, desperate, fading hope, on the edge of death");
+      category += "-desperate";
+    } else if (hpPct < 0.40) {
+      // Bloodied: place HP FIRST to heavily influence tone
+      hpLeadParts.push(`party ${hpDesc}`);
+    } else if (hpDesc) {
+      // Normal range with a descriptor — append normally
+      parts.push(`party ${hpDesc}`);
+    }
+
+    // Track significant HP drops during combat to force regeneration
+    if (hpContext) {
+      const hpDrop = hpContext.previousHpPct - hpPct;
+      if (hpDrop > 0.25 && combat.active) {
+        hpContext.forceRegeneration = true;
+      }
+    }
+
     const resDesc = getDescriptor(party.resourcePct, RESOURCE_DESCRIPTORS);
-    if (hpDesc) parts.push(`party ${hpDesc}`);
     if (resDesc) parts.push(resDesc);
 
     // Add 1-2 random atmospheric modifiers for variety
     const modifiers = _pickRandomN(ATMOSPHERIC_MODIFIERS, 1 + Math.floor(Math.random() * 2));
     parts.push(...modifiers);
 
-    const prompt = parts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
+    // Combine: HP lead parts go FIRST for maximum influence on generation
+    const allParts = [...hpLeadParts, ...parts];
+    const prompt = allParts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
     const title = this._buildTitle(combat, scene);
 
     return { prompt, category, title };
@@ -551,7 +576,7 @@ class PromptBuilder {
       const creatureNames = combat.creatureTypes.length
         ? combat.creatureTypes.slice(0, 2).map(t => t.replace(/^\w/, c => c.toUpperCase())).join(" & ")
         : "Unknown Foes";
-      const sceneName = canvas?.scene?.name || "the Unknown";
+      const sceneName = game.scenes?.active?.name || "the Unknown";
 
       return template
         .replace("{creature}", creatureName.replace(/^\w/, c => c.toUpperCase()))
@@ -965,23 +990,34 @@ class PlaylistCacheManager {
     return null;
   }
 
+  /** Verify a sound still exists in its playlist (not deleted by user). */
+  static _soundIsValid(playlist, sound) {
+    if (!sound || !playlist) return false;
+    // Check the sound still exists in the playlist's embedded collection
+    if (!playlist.sounds.has(sound.id)) return false;
+    // Check the sound has a path
+    if (!sound.path) return false;
+    return true;
+  }
+
   static _findExact(category) {
     // Search within the consolidated playlist for sounds with matching category flag
     const playlistName = this._playlistName(category);
     const playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist || !playlist.sounds.size) return null;
 
-    // Prefer sounds flagged with this exact category
+    // Prefer sounds flagged with this exact category, validate each
     const matchingSounds = [...playlist.sounds].filter(s =>
-      s.getFlag(MODULE_ID, "category") === category
+      s.getFlag(MODULE_ID, "category") === category && this._soundIsValid(playlist, s)
     );
     if (matchingSounds.length) {
       const sound = matchingSounds[Math.floor(Math.random() * matchingSounds.length)];
       return { playlist, sound, url: sound.path, category, fuzzy: false };
     }
 
-    // Fallback: any sound in the playlist
-    const sounds = [...playlist.sounds];
+    // Fallback: any valid sound in the playlist
+    const sounds = [...playlist.sounds].filter(s => this._soundIsValid(playlist, s));
+    if (!sounds.length) return null;
     const sound = sounds[Math.floor(Math.random() * sounds.length)];
     return { playlist, sound, url: sound.path, category, fuzzy: false };
   }
@@ -1008,6 +1044,7 @@ class PlaylistCacheManager {
 
     for (const playlist of playlists) {
       for (const sound of playlist.sounds) {
+        if (!this._soundIsValid(playlist, sound)) continue;
         const soundCat = sound.getFlag(MODULE_ID, "category") || "";
         const candidateKeywords = soundCat.split("-").filter(Boolean).filter(kw => !STRUCTURAL.has(kw));
         if (!candidateKeywords.length) continue;
@@ -1523,6 +1560,10 @@ class AtmospheraController {
     // Dedup detection
     this._dedup = new PromptDeduplicator(5);
 
+    // HP tracking for tone shifts
+    this._lastHpPct = 1.0;
+    this._lastHpEvalTime = 0;
+
     // Playback lock — prevents re-evaluation during playback startup
     this._playbackLock = false;
     this._lastPlayTime = 0;
@@ -1538,6 +1579,25 @@ class AtmospheraController {
         if (playlist?.getFlag(MODULE_ID, "managed")) {
           console.log(`${MODULE_ID} | Atmosphera sound stopped: "${sound.name}"`);
           this._onTrackEnded();
+        }
+      }
+    });
+
+    // Detect when a user deletes a sound from an Atmosphera playlist
+    Hooks.on("deletePlaylistSound", (sound) => {
+      const playlist = sound.parent;
+      if (!playlist?.getFlag(MODULE_ID, "managed")) return;
+
+      const category = sound.getFlag(MODULE_ID, "category") || "unknown";
+      console.log(`${MODULE_ID} | Deleted sound "${sound.name}" from managed playlist (category: ${category})`);
+
+      // If the deleted sound was the currently playing track, force re-evaluation
+      if (sound.playing || this._lastCategory === category) {
+        console.log(`${MODULE_ID} | Deleted sound was active/current — re-evaluating`);
+        this._lastCategory = null;
+        this._forceNewGeneration = true;
+        if (game.settings.get(MODULE_ID, "enabled") && this.autoMode) {
+          this.evaluateAndPlay(true);
         }
       }
     });
@@ -1596,7 +1656,7 @@ class AtmospheraController {
     this._forceNewGeneration = false;
 
     // Don't start variety timer for default/placeholder scenes
-    const sceneName = canvas?.scene?.name || "";
+    const sceneName = game.scenes?.active?.name || "";
     if (DEFAULT_SCENE_NAMES.has(sceneName.toLowerCase().trim())) {
       if (this._sceneRefreshTimer) clearTimeout(this._sceneRefreshTimer);
     } else {
@@ -1608,6 +1668,14 @@ class AtmospheraController {
   async _playFromCache(cached, category) {
     if (this._playbackLock) return;
     if (this._lastPlayTime && (Date.now() - this._lastPlayTime) < this._minPlayDuration) return;
+
+    // Validate the cached sound still exists (user may have deleted it)
+    if (cached.sound && cached.playlist && !PlaylistCacheManager._soundIsValid(cached.playlist, cached.sound)) {
+      console.log(`${MODULE_ID} | Cached sound no longer valid — falling through to generation`);
+      this._lastCategory = null;
+      this.evaluateAndPlay(true);
+      return;
+    }
 
     const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
     const volume = game.settings.get(MODULE_ID, "masterVolume");
@@ -1680,13 +1748,25 @@ class AtmospheraController {
       }
     }
 
-    const { prompt, category, title } = PromptBuilder.build(state, this.manualMood);
+    // Build HP context for tracking significant drops
+    const hpContext = { previousHpPct: this._lastHpPct, forceRegeneration: false };
+    const { prompt, category, title } = PromptBuilder.build(state, this.manualMood, hpContext);
+
+    // Update tracked HP percentage
+    this._lastHpPct = state.party.hpPct;
 
     this.currentPrompt = prompt;
     this.currentCategory = category;
     if (this.panel) this.panel.updatePrompt(prompt);
 
-    if (!force && category === this._lastCategory && FoundryPlaylistManager.isPlaying) return;
+    // Force new generation if HP dropped significantly (skip cache)
+    if (hpContext.forceRegeneration) {
+      console.log(`${MODULE_ID} | Significant HP drop (${Math.round(hpContext.previousHpPct * 100)}% → ${Math.round(state.party.hpPct * 100)}%) — forcing new generation`);
+      this._forceNewGeneration = true;
+      this._lastCategory = null;
+    }
+
+    if (!force && !this._forceNewGeneration && category === this._lastCategory && FoundryPlaylistManager.isPlaying) return;
 
     this._lastCategory = category;
     this._doGenerate(prompt, title, category);
@@ -2290,7 +2370,7 @@ Hooks.once("ready", () => {
       console.log(`${MODULE_ID} | Auto-starting on world ready`);
       controller.evaluateAndPlay(true);
       // Start scene refresh timer for current scene
-      const sceneId = canvas?.scene?.id;
+      const sceneId = game.scenes?.active?.id;
       if (sceneId) controller.onSceneChange(sceneId);
     }, 2000);
   }
@@ -2299,12 +2379,15 @@ Hooks.once("ready", () => {
   //  SCENE TRANSITIONS + PRE-WARMING
   // ════════════════════════════════════════════════════════════════
 
-  Hooks.on("canvasReady", () => {
+  // Listen for active scene changes (not just viewed scene via canvasReady)
+  Hooks.on("updateScene", (scene, changed) => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
+    if (!("active" in changed) || !changed.active) return;
 
-    const sceneId = canvas?.scene?.id;
+    const sceneId = scene.id;
+    console.log(`${MODULE_ID} | Active scene changed to "${scene.name}" (${sceneId})`);
 
-    // Reset scene variety timer on scene change
+    // Reset scene variety timer on active scene change
     if (sceneId) controller.onSceneChange(sceneId);
 
     if (sceneId && !controller._prewarmedScenes.has(sceneId)) {
@@ -2314,9 +2397,25 @@ Hooks.once("ready", () => {
     if (!controller.autoMode) return;
     if (game.combat?.active) return;
 
-    console.log(`${MODULE_ID} | Scene activated — evaluating ambient`);
+    console.log(`${MODULE_ID} | Active scene changed — evaluating ambient`);
     controller._lastCategory = null;
     controller.evaluateAndPlay(true);
+  });
+
+  // Also handle canvasReady for initial load (no scene change event fires)
+  Hooks.on("canvasReady", () => {
+    if (!game.settings.get(MODULE_ID, "enabled")) return;
+
+    const sceneId = game.scenes?.active?.id;
+
+    // Only act if this is the active scene (GM might be viewing a non-active scene)
+    if (sceneId && sceneId !== controller._currentSceneId) {
+      controller.onSceneChange(sceneId);
+    }
+
+    if (sceneId && !controller._prewarmedScenes.has(sceneId)) {
+      controller.prewarmScene(sceneId);
+    }
   });
 
   // ════════════════════════════════════════════════════════════════
