@@ -160,6 +160,13 @@ function _pickRandomN(arr, n) {
 /* ──────────────────────────── DEDUP DETECTION ──────────────────────────── */
 
 class PromptDeduplicator {
+  static SKIP_WORDS = new Set([
+    "instrumental", "music", "background", "the", "and", "for", "with",
+    "from", "that", "this", "party", "fighting", "atmosphere", "dynamic",
+    "varied", "gentle", "intense", "combat", "ambient", "seamless", "loop",
+    "loopable", "fade", "continuous"
+  ]);
+
   constructor(maxHistory = 5) {
     this._history = [];
     this._maxHistory = maxHistory;
@@ -167,14 +174,14 @@ class PromptDeduplicator {
 
   /**
    * Check if prompt is too similar to recent prompts.
-   * Returns true if >80% word overlap with any recent prompt.
+   * Returns true if >90% meaningful-word overlap with any recent prompt.
    */
   isSimilar(prompt) {
     const words = this._tokenize(prompt);
     for (const prev of this._history) {
       const prevWords = this._tokenize(prev);
       const overlap = this._overlapRatio(words, prevWords);
-      if (overlap > 0.8) return true;
+      if (overlap > 0.9) return true;
     }
     return false;
   }
@@ -186,8 +193,15 @@ class PromptDeduplicator {
     }
   }
 
+  clear() {
+    this._history = [];
+  }
+
   _tokenize(str) {
-    return new Set(str.toLowerCase().split(/[\s,]+/).filter(w => w.length > 2));
+    return new Set(
+      str.toLowerCase().split(/[\s,]+/)
+        .filter(w => w.length > 2 && !PromptDeduplicator.SKIP_WORDS.has(w))
+    );
   }
 
   _overlapRatio(setA, setB) {
@@ -427,16 +441,38 @@ class GameStateCollector {
     return { name, darkness, weather, keywords, environments: [...environments], active: true };
   }
 
-  static combatSignature() {
+  static combatSignature(partyHpPct = null, lastHpPct = null) {
     const combat = this._collectCombat();
     if (!combat.active) return "";
-    const alive = combat.creatures.filter(c => !c.isDead);
+
+    // Include individual combatant IDs so adding/removing any creature changes the sig
+    const combatDoc = game.combat;
+    const ids = [];
+    let hostileCount = 0;
+    let friendlyCount = 0;
+    for (const c of combatDoc?.combatants || []) {
+      const actor = c.actor;
+      if (!actor) continue;
+      const hp = actor.system?.attributes?.hp;
+      const isDead = hp && hp.value <= 0;
+      if (isDead) continue;
+      ids.push(c.id);
+      if (actor.hasPlayerOwner) friendlyCount++;
+      else hostileCount++;
+    }
+    ids.sort();
+
     const types = combat.creatureTypes.slice().sort().join(",");
     const bossFlag = combat.hasBoss ? "|BOSS" : "";
-    const aliveCount = alive.length;
     const bossAlive = combat.bosses.filter(b => !b.isDead).length;
-    // Include alive counts so monster deaths change the signature
-    return `${types}|${aliveCount}e|${bossAlive}b${bossFlag}`;
+
+    // If HP dropped >25% from last check, include a changing marker to force regen
+    let hpMarker = "";
+    if (partyHpPct !== null && lastHpPct !== null && (lastHpPct - partyHpPct) > 0.25) {
+      hpMarker = `|HPDROP-${Math.round(partyHpPct * 100)}`;
+    }
+
+    return `${types}|ids:${ids.join(",")}|h${hostileCount}f${friendlyCount}|${bossAlive}b${bossFlag}${hpMarker}`;
   }
 }
 
@@ -462,7 +498,7 @@ class PromptBuilder {
 
     if (combat.active) {
       category = this._buildCombatCategory(combat);
-      parts.push(this._buildCombatPrompt(combat));
+      parts.push(this._buildCombatPrompt(combat, party));
     } else {
       category = this._buildAmbientCategory(scene);
       parts.push(this._buildAmbientPrompt(scene));
@@ -501,24 +537,47 @@ class PromptBuilder {
 
     // Combine: HP lead parts go FIRST for maximum influence on generation
     const allParts = [...hpLeadParts, ...parts];
+
+    // Append loop-friendly hints AFTER main content (for all prompts)
+    allParts.push("seamless loop, loopable, no fade in, no fade out, continuous");
+
     const prompt = allParts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
     const title = this._buildTitle(combat, scene);
 
     return { prompt, category, title };
   }
 
-  static _buildCombatPrompt(combat) {
+  static _buildCombatPrompt(combat, party) {
     const parts = [];
     if (combat.hasBoss) {
       parts.push("epic boss battle music, climactic, orchestral, choir");
-      parts.push(`fighting ${combat.bosses.filter(b => !b.isDead).map(b => b.name).join(" and ")}`);
+      const bossNames = combat.bosses.filter(b => !b.isDead).map(b => b.name);
+      parts.push(`fighting ${bossNames.join(" and ")}`);
     } else {
       parts.push("intense combat music, battle, percussion, adrenaline");
     }
+
+    // Include specific creature names (not just types)
+    const aliveCreatures = combat.creatures.filter(c => !c.isDead);
+    const creatureNames = [...new Set(aliveCreatures.map(c => c.name))].slice(0, 4);
+    if (creatureNames.length) {
+      parts.push(`battling ${creatureNames.join(", ")}`);
+    }
+
     for (const type of combat.creatureTypes.slice(0, 3)) {
-      parts.push(`fighting ${type}`);
       if (CREATURE_HINTS[type]) parts.push(CREATURE_HINTS[type]);
     }
+
+    // Include round number
+    if (combat.round) {
+      parts.push(`round ${combat.round} of combat`);
+    }
+
+    // Include numeric HP percentage
+    if (party) {
+      parts.push(`party at ${Math.round(party.hpPct * 100)}% health`);
+    }
+
     if (combat.crRange) {
       if (combat.crRange.max >= 15) parts.push("extremely dangerous, legendary threat");
       else if (combat.crRange.max >= 10) parts.push("powerful enemies, high stakes");
@@ -535,19 +594,32 @@ class PromptBuilder {
 
   static _buildAmbientPrompt(scene) {
     const parts = [];
+
+    // Always include scene name for uniqueness
+    if (scene.name) {
+      parts.push(`background music for ${scene.name}`);
+    }
+
     if (scene.keywords.length) {
-      parts.push("background music");
       for (const kw of scene.keywords.slice(0, 3)) {
         if (SCENE_KEYWORD_HINTS[kw]) parts.push(SCENE_KEYWORD_HINTS[kw]);
       }
     } else if (scene.name) {
-      parts.push(`background music, ${scene.name.toLowerCase()} atmosphere`);
+      parts.push(`${scene.name.toLowerCase()} atmosphere`);
     } else {
       parts.push("peaceful ambient background music, gentle exploration");
     }
+
+    // Time-of-day from darkness level
     const darknessLevel = scene.environment?.darknessLevel ?? scene.darkness ?? 0;
-    if (darknessLevel > 0.7) parts.push("dark, torchlit, shadows");
-    else if (darknessLevel > 0.4) parts.push("dim, moody lighting");
+    if (darknessLevel > 0.7) {
+      parts.push("nighttime, dark, torchlit, shadows");
+    } else if (darknessLevel > 0.3) {
+      parts.push("twilight, dim, moody lighting");
+    } else {
+      parts.push("daytime, bright, open");
+    }
+
     if (scene.weather) parts.push(`${scene.weather} weather`);
     for (const env of (scene.environments || []).slice(0, 2)) parts.push(env);
     return parts.join(", ");
@@ -595,9 +667,10 @@ class PromptBuilder {
 
   static buildSting(type) {
     const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
+    const loopHint = "seamless loop, loopable, no fade in, no fade out, continuous";
     const stings = {
-      victory: { prompt: "instrumental, triumphant victory fanfare, celebratory, brass, short", category: "sting-victory", title: `${prefix} — Victory` },
-      defeat: { prompt: "instrumental, somber defeat, loss, mournful strings, fading hope, short", category: "sting-defeat", title: `${prefix} — Defeat` }
+      victory: { prompt: `instrumental, triumphant victory fanfare, celebratory, brass, short, ${loopHint}`, category: "sting-victory", title: `${prefix} — Victory` },
+      defeat: { prompt: `instrumental, somber defeat, loss, mournful strings, fading hope, short, ${loopHint}`, category: "sting-defeat", title: `${prefix} — Defeat` }
     };
     return stings[type] || stings.victory;
   }
@@ -1715,7 +1788,7 @@ class AtmospheraController {
     if (this.panel) this.panel.render();
   }
 
-  evaluateAndPlay(force = false) {
+  evaluateAndPlay(force = false, options = {}) {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
 
     // Respect playback lock
@@ -1769,7 +1842,7 @@ class AtmospheraController {
     if (!force && !this._forceNewGeneration && category === this._lastCategory && FoundryPlaylistManager.isPlaying) return;
 
     this._lastCategory = category;
-    this._doGenerate(prompt, title, category);
+    this._doGenerate(prompt, title, category, { bypassCooldown: options.bypassCooldown });
   }
 
   triggerGeneration(customPrompt) {
@@ -1787,28 +1860,32 @@ class AtmospheraController {
     }
   }
 
-  async _doGenerate(prompt, title, category) {
+  async _doGenerate(prompt, title, category, options = {}) {
     if (this._generating) {
-      this._queued = { prompt, title, category };
+      this._queued = { prompt, title, category, options };
       console.log(`${MODULE_ID} | Generation in progress, queued: ${category}`);
       return;
     }
 
+    const bypassCooldown = options.bypassCooldown || false;
+
     // Adaptive cooldown: detect rapid switching vs normal transitions
-    // Normal transition (scene change, combat start) = generate immediately
-    // Rapid switching (3+ requests in 60s) = throttle to prevent credit waste
+    // Explicit state changes (scene change, combat start/end, HP threshold) bypass cooldown.
+    // Only automatic re-evaluations (timers, variety refresh) are throttled.
     const now = Date.now();
     const RAPID_WINDOW = 60000; // 60s window to detect rapid switching
-    const RAPID_THRESHOLD = 3;  // 3+ generation requests in window = rapid
+    const RAPID_THRESHOLD = 6;  // 6+ generation requests in window = rapid
     const maxCooldownMs = game.settings.get(MODULE_ID, "generationCooldown") * 1000;
 
-    // Track this generation request
-    this._generationTimestamps.push(now);
+    // Track this generation request (only non-bypass requests count toward rapid detection)
+    if (!bypassCooldown) {
+      this._generationTimestamps.push(now);
+    }
     // Trim old timestamps outside the window
     this._generationTimestamps = this._generationTimestamps.filter(t => now - t < RAPID_WINDOW);
 
-    // Check if we're in an active adaptive cooldown
-    if (now < this._adaptiveCooldownUntil) {
+    // Check if we're in an active adaptive cooldown (bypassed by explicit state changes)
+    if (!bypassCooldown && now < this._adaptiveCooldownUntil) {
       const remaining = Math.round((this._adaptiveCooldownUntil - now) / 1000);
       const cached = PlaylistCacheManager.findCached(category, prompt);
       if (cached) {
@@ -1828,8 +1905,9 @@ class AtmospheraController {
       return;
     }
 
-    // Detect rapid switching: if 3+ requests in 60s, activate adaptive cooldown
-    if (this._generationTimestamps.length >= RAPID_THRESHOLD) {
+    // Detect rapid switching: if 6+ requests in 60s, activate adaptive cooldown
+    // Bypass requests don't trigger or respect cooldown
+    if (!bypassCooldown && this._generationTimestamps.length >= RAPID_THRESHOLD) {
       // Escalate: cooldown = min(maxCooldown, 60s * overshoot count)
       const overshoot = this._generationTimestamps.length - RAPID_THRESHOLD + 1;
       const cooldownMs = Math.min(maxCooldownMs, 60000 * overshoot);
@@ -1934,7 +2012,7 @@ class AtmospheraController {
         const next = this._queued;
         this._queued = null;
         console.log(`${MODULE_ID} | Processing queued generation: ${next.category}`);
-        this._doGenerate(next.prompt, next.title, next.category);
+        this._doGenerate(next.prompt, next.title, next.category, next.options || {});
       }
     }
   }
@@ -2398,8 +2476,9 @@ Hooks.once("ready", () => {
     if (game.combat?.active) return;
 
     console.log(`${MODULE_ID} | Active scene changed — evaluating ambient`);
+    controller._dedup.clear();
     controller._lastCategory = null;
-    controller.evaluateAndPlay(true);
+    controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
   // Also handle canvasReady for initial load (no scene change event fires)
@@ -2427,8 +2506,9 @@ Hooks.once("ready", () => {
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat started — switching to combat music`);
 
-    controller._lastCombatSignature = GameStateCollector.combatSignature();
-    controller.evaluateAndPlay(true);
+    controller._lastCombatSignature = GameStateCollector.combatSignature(null, null);
+    controller._dedup.clear();
+    controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
   Hooks.on("updateCombat", (combat, changed) => {
@@ -2436,14 +2516,15 @@ Hooks.once("ready", () => {
     if (!controller.autoMode) return;
     if (!("round" in changed)) return;
 
-    const newSig = GameStateCollector.combatSignature();
+    const party = GameStateCollector._collectParty();
+    const newSig = GameStateCollector.combatSignature(party.hpPct, controller._lastHpPct);
     if (newSig === controller._lastCombatSignature) {
       console.log(`${MODULE_ID} | Round changed but combat composition unchanged — skipping`);
       return;
     }
     console.log(`${MODULE_ID} | Combat composition changed: "${controller._lastCombatSignature}" → "${newSig}"`);
     controller._lastCombatSignature = newSig;
-    controller.evaluateAndPlay(true);
+    controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
   Hooks.on("combatEnd", () => {
@@ -2452,6 +2533,7 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Combat ended`);
 
     controller._lastCombatSignature = "";
+    controller._dedup.clear();
     const party = GameStateCollector._collectParty();
     controller.playSting(party.allDown ? "defeat" : "victory");
   });
@@ -2461,8 +2543,9 @@ Hooks.once("ready", () => {
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat deleted — reverting to ambient`);
     controller._lastCombatSignature = "";
+    controller._dedup.clear();
     controller._lastCategory = null;
-    controller.evaluateAndPlay(true);
+    controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
   // ════════════════════════════════════════════════════════════════
@@ -2481,11 +2564,12 @@ Hooks.once("ready", () => {
     if (hpChanged || spellsChanged || resourcesChanged) {
       clearTimeout(controller._updateActorTimer);
       controller._updateActorTimer = setTimeout(() => {
-        const newSig = GameStateCollector.combatSignature();
+        const party = GameStateCollector._collectParty();
+        const newSig = GameStateCollector.combatSignature(party.hpPct, controller._lastHpPct);
         if (newSig !== controller._lastCombatSignature) {
           console.log(`${MODULE_ID} | Combat composition changed via actor update`);
           controller._lastCombatSignature = newSig;
-          controller.evaluateAndPlay(true);
+          controller.evaluateAndPlay(true, { bypassCooldown: true });
         } else {
           controller.evaluateAndPlay();
         }
