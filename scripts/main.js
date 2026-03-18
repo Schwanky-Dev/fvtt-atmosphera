@@ -943,8 +943,14 @@ class FoundryPlaylistManager {
       prompt = ""
     } = options;
 
-    // Stop currently playing Atmosphera playlists first
-    await this.stopAllAtmosphera(fadeDuration);
+    // Capture currently playing sounds BEFORE starting the new one
+    const previouslyPlaying = [];
+    for (const pl of game.playlists || []) {
+      if (pl.getFlag(MODULE_ID, "managed") !== true || !pl.playing) continue;
+      for (const s of pl.sounds) {
+        if (s.playing) previouslyPlaying.push({ playlist: pl, sound: s });
+      }
+    }
 
     // Find or create the categorized playlist (inside Atmosphera folder)
     const playlistName = PlaylistCacheManager._playlistName(category);
@@ -968,8 +974,26 @@ class FoundryPlaylistManager {
       await sound.update({ volume: volume, fade: fadeDuration });
     }
 
-    // Play the sound
+    // If the new track is the same as what's already playing, don't restart it
+    const alreadyPlaying = previouslyPlaying.some(p => p.sound.path === filePath && p.sound.playing);
+    if (alreadyPlaying) {
+      console.log(`${MODULE_ID} | Track "${filePath}" already playing — skipping restart`);
+      return { playlist, sound };
+    }
+
+    // Start the NEW track first (fades in)
     await playlist.playSound(sound, { fade: fadeDuration });
+
+    // THEN fade out old tracks (true crossfade — no silence gap)
+    for (const prev of previouslyPlaying) {
+      // Don't stop the track we just started
+      if (prev.sound.id === sound.id && prev.playlist.id === playlist.id) continue;
+      try {
+        await prev.playlist.stopSound(prev.sound, { fade: fadeDuration });
+      } catch (e) {
+        console.warn(`${MODULE_ID} | Error stopping previous sound:`, e);
+      }
+    }
 
     return { playlist, sound };
   }
