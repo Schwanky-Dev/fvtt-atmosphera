@@ -2662,47 +2662,44 @@ Hooks.once("ready", () => {
   //  LIVE UPDATES
   // ════════════════════════════════════════════════════════════════
 
+  // Live actor updates during combat — only react to MEANINGFUL changes.
+  // Individual damage rolls, heals, spell slot decrements etc. should NOT
+  // each trigger re-evaluation. We debounce 3s and only act if the combat
+  // signature actually changed (creature died, HP bracket shifted, etc.)
   Hooks.on("updateActor", (actor, changed) => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     if (!game.combat?.active) return;
 
+    // Only care about HP changes (not spells/resources — those don't affect music)
     const hpChanged = changed?.system?.attributes?.hp;
-    const spellsChanged = changed?.system?.spells;
-    const resourcesChanged = changed?.system?.resources;
+    if (!hpChanged) return;
 
-    if (hpChanged || spellsChanged || resourcesChanged) {
-      clearTimeout(controller._updateActorTimer);
-      controller._updateActorTimer = setTimeout(() => {
-        const party = GameStateCollector._collectParty();
-        const newSig = GameStateCollector.combatSignature(party.hpPct, controller._lastHpPct);
-        if (newSig !== controller._lastCombatSignature) {
-          console.log(`${MODULE_ID} | Combat composition changed via actor update`);
-          controller._lastCombatSignature = newSig;
-          controller.evaluateAndPlay(true, { bypassCooldown: true });
-        } else {
-          controller.evaluateAndPlay();
-        }
-      }, 500);
-    }
+    clearTimeout(controller._updateActorTimer);
+    controller._updateActorTimer = setTimeout(() => {
+      const party = GameStateCollector._collectParty();
+      const newSig = GameStateCollector.combatSignature(party.hpPct, controller._lastHpPct);
+
+      // Update tracked HP
+      controller._lastHpPct = party.hpPct;
+
+      // Only act if signature actually changed (creature died, HP bracket shifted)
+      if (newSig !== controller._lastCombatSignature) {
+        console.log(`${MODULE_ID} | Combat sig changed via HP update: "${controller._lastCombatSignature}" → "${newSig}"`);
+        controller._lastCombatSignature = newSig;
+        controller.evaluateAndPlay(true, { bypassCooldown: true });
+      }
+      // If sig unchanged, do NOTHING — don't call evaluateAndPlay at all
+    }, 3000); // 3s debounce — waits for a full flurry of damage to settle
   });
 
   // ════════════════════════════════════════════════════════════════
   //  PAUSE / UNPAUSE
   // ════════════════════════════════════════════════════════════════
 
-  Hooks.on("pauseGame", (paused) => {
-    if (!game.settings.get(MODULE_ID, "enabled")) return;
-    if (paused) {
-      console.log(`${MODULE_ID} | Game paused — stopping Atmosphera playlists`);
-      FoundryPlaylistManager.stopAllAtmosphera(2000);
-      controller._setStatus("Paused");
-    } else {
-      console.log(`${MODULE_ID} | Game unpaused — resuming`);
-      controller._lastCategory = null;
-      controller.evaluateAndPlay(true);
-    }
-  });
+  // Pause/unpause: do NOTHING. Music should keep playing through pauses.
+  // The GM pauses to talk to players, read notes, etc. — killing the
+  // soundtrack breaks immersion for zero benefit.
 
   // ════════════════════════════════════════════════════════════════
   //  SETTING CHANGES
