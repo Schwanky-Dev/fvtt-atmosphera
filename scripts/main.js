@@ -362,7 +362,15 @@ class GameStateCollector {
   }
 
   static _collectParty() {
-    const partyActors = game.actors?.filter(a => a.hasPlayerOwner && a.type === "character") || [];
+    // Try game.actors first; if none found, fallback to combat combatants
+    let partyActors = game.actors?.filter(a => a.hasPlayerOwner && a.type === "character") || [];
+    if (!partyActors.length && game.combat?.active) {
+      // Fallback: get party members from combat tracker (friendly combatants)
+      partyActors = [...(game.combat.combatants || [])]
+        .filter(c => c.actor?.hasPlayerOwner || c.actor?.type === "character")
+        .map(c => c.actor)
+        .filter(Boolean);
+    }
     if (!partyActors.length) return { hpPct: 1, resourcePct: 1, count: 0, allDown: false };
 
     let totalHp = 0, totalMaxHp = 0;
@@ -438,7 +446,16 @@ class GameStateCollector {
       if (nameLower.includes(kw)) keywords.push(kw);
     }
 
-    return { name, darkness, weather, keywords, environments: [...environments], active: true };
+    // If darkness is 0 (unconfigured), infer from scene name keywords
+    let effectiveDarkness = darkness;
+    if (effectiveDarkness === 0 && nameLower) {
+      const DARK_KEYWORDS = ["dungeon", "crypt", "cave", "underdark", "tomb", "catacomb", "dark", "shadow", "abyss", "underground"];
+      const DIM_KEYWORDS = ["swamp", "marsh", "fog", "twilight", "dusk", "evening", "graveyard"];
+      if (DARK_KEYWORDS.some(kw => nameLower.includes(kw))) effectiveDarkness = 0.8;
+      else if (DIM_KEYWORDS.some(kw => nameLower.includes(kw))) effectiveDarkness = 0.5;
+    }
+
+    return { name, darkness: effectiveDarkness, weather, keywords, environments: [...environments], active: true };
   }
 
   static combatSignature(partyHpPct = null, lastHpPct = null) {
@@ -478,7 +495,10 @@ class GameStateCollector {
       else hpBracket = "HP100";
     }
 
-    return `${types}|ids:${ids.join(",")}|h${hostileCount}f${friendlyCount}|${bossAlive}b${bossFlag}|R${round}|${hpBracket}`;
+    // NOTE: Round number deliberately EXCLUDED from signature.
+    // Round changes alone should NOT trigger regeneration — only composition
+    // changes (creatures dying, HP bracket shifts, boss status) should.
+    return `${types}|ids:${ids.join(",")}|h${hostileCount}f${friendlyCount}|${bossAlive}b${bossFlag}|${hpBracket}`;
   }
 }
 
@@ -1234,16 +1254,24 @@ class PlaylistCacheManager {
 
     const filename = `${track.id}.mp3`;
     let filePath;
-    try {
-      const audioResp = await fetch(track.url);
-      if (!audioResp.ok) throw new Error(`Download failed: ${audioResp.status}`);
-      const blob = await audioResp.blob();
-      const file = new File([blob], filename, { type: "audio/mpeg" });
-      const uploadResult = await FP.upload("data", dirPath, file);
-      filePath = uploadResult.path;
-    } catch (e) {
-      console.warn(`${MODULE_ID} | Failed to download/upload track, using remote URL`, e);
+
+    // Check if current user has file upload permission before attempting
+    const canUpload = game.user?.can("FILES_UPLOAD") ?? false;
+    if (!canUpload) {
+      console.warn(`${MODULE_ID} | User lacks FILES_UPLOAD permission — using remote URL for playback`);
       filePath = track.url;
+    } else {
+      try {
+        const audioResp = await fetch(track.url);
+        if (!audioResp.ok) throw new Error(`Download failed: ${audioResp.status}`);
+        const blob = await audioResp.blob();
+        const file = new File([blob], filename, { type: "audio/mpeg" });
+        const uploadResult = await FP.upload("data", dirPath, file);
+        filePath = uploadResult.path;
+      } catch (e) {
+        console.warn(`${MODULE_ID} | Failed to download/upload track, using remote URL`, e);
+        filePath = track.url;
+      }
     }
 
     // Find or create the categorized playlist (inside Atmosphera folder)
