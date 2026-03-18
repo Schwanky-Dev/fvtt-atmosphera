@@ -2673,25 +2673,35 @@ Hooks.once("ready", () => {
   ui.notifications.info("Atmosphera v0.6.1 ready — music syncs to all players via Foundry playlists.");
 
   // ── Auto-create control panel macro ──
-  (async () => {
+  // NOTE: Foundry v13 has a core bug where socket onack throws
+  // "Cannot read properties of null (reading 'startsWith')" after
+  // Macro.create. The macro DOES create successfully — we just
+  // suppress the error. Wrap in setTimeout to avoid blocking init.
+  setTimeout(async () => {
     try {
       const macroName = "Atmosphera Panel";
       const existing = game.macros?.find(m => m.name === macroName && m.getFlag(MODULE_ID, "autoCreated"));
       if (!existing && game.user.isGM) {
-        const macro = await Macro.create({
-          name: macroName,
-          type: "script",
-          command: `const api = game.modules.get("atmosphera")?.api;\nif (api) { api.openPanel(); }\nelse { ui.notifications.warn("Atmosphera is not active."); }`,
-          img: "icons/svg/sound.svg",
-          flags: { [MODULE_ID]: { autoCreated: true } }
-        });
-        if (macro) {
+        try {
+          await Macro.create({
+            name: macroName,
+            type: "script",
+            command: `const api = game.modules.get("atmosphera")?.api;\nif (api) { api.openPanel(); }\nelse { ui.notifications.warn("Atmosphera is not active."); }`,
+            img: "icons/svg/sound.svg",
+            flags: { [MODULE_ID]: { autoCreated: true } }
+          });
           console.log(`${MODULE_ID} | Created "Atmosphera Panel" macro`);
+        } catch (createErr) {
+          // Foundry v13 socket ack bug — macro likely created despite error
+          if (createErr?.message?.includes("startsWith")) {
+            console.log(`${MODULE_ID} | Macro created (suppressed v13 socket ack error)`);
+          } else {
+            console.warn(`${MODULE_ID} | Macro creation failed:`, createErr.message);
+          }
         }
       }
-    } catch (err) {
-      // Foundry v13 socket ack bug may fire here — macro still creates successfully
-      console.warn(`${MODULE_ID} | Macro creation warning (likely harmless):`, err.message);
+    } catch (outerErr) {
+      console.warn(`${MODULE_ID} | Macro auto-create error:`, outerErr.message);
     }
-  })();
+  }, 5000);
 });
