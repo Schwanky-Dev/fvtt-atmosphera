@@ -198,10 +198,8 @@ class PromptDeduplicator {
   }
 
   _tokenize(str) {
-    // Strip bracketed section labels like [Style: ...] → just the content words
-    const stripped = str.replace(/\[[A-Za-z]+:\s*/g, "").replace(/\]/g, "");
     return new Set(
-      stripped.toLowerCase().split(/[\s,]+/)
+      str.toLowerCase().split(/[\s,]+/)
         .filter(w => w.length > 2 && !PromptDeduplicator.SKIP_WORDS.has(w))
     );
   }
@@ -583,16 +581,16 @@ class PromptBuilder {
       }
     }
 
-    // ── Assemble structured prompt ──
-    const sections = [];
-    sections.push(`[Style: ${styleParts.filter(Boolean).join(", ")}]`);
-    if (sceneName) sections.push(`[Scene: ${sceneName}]`);
-    if (moodParts.length) sections.push(`[Mood: ${moodParts.filter(Boolean).join(", ")}]`);
-    if (creatureParts.length) sections.push(`[Creatures: ${creatureParts.filter(Boolean).join(", ")}]`);
-    if (combatParts.length) sections.push(`[Combat: ${combatParts.filter(Boolean).join(", ")}]`);
-    sections.push("[Loop: seamless loop, loopable, continuous]");
+    // ── Assemble natural language prompt (flat comma-separated) ──
+    const allParts = [];
+    allParts.push(...styleParts.filter(Boolean));
+    if (sceneName) allParts.push(sceneName);
+    allParts.push(...moodParts.filter(Boolean));
+    if (creatureParts.length) allParts.push(...creatureParts.filter(Boolean));
+    if (combatParts.length) allParts.push(...combatParts.filter(Boolean));
+    allParts.push("seamless loop", "loopable", "continuous");
 
-    const prompt = sections.join(" ").replace(/\s+/g, " ").trim();
+    const prompt = allParts.join(", ").replace(/\s+/g, " ").trim();
     const title = this._buildTitle(combat, scene);
 
     return { prompt, category, title };
@@ -1695,10 +1693,13 @@ class AtmospheraController {
     this._lastHpPct = 1.0;
     this._lastHpEvalTime = 0;
 
-    // Playback lock — prevents re-evaluation during playback startup
-    this._playbackLock = false;
+    // Debounce — prevents the SAME evaluation from retriggering
+    this._lastEvalFingerprint = "";
     this._lastPlayTime = 0;
     this._minPlayDuration = 30000; // Don't switch tracks within 30s
+
+    // Pending evaluation — queued when state changes during generation
+    this._pendingEvaluation = null;
   }
 
   init() {
@@ -1739,8 +1740,6 @@ class AtmospheraController {
     this._endCheckInterval = setInterval(() => {
       if (!game.settings.get(MODULE_ID, "enabled")) return;
       if (!this.autoMode) return;
-
-      if (this._playbackLock) return;
 
       if (this._lastCategory && !FoundryPlaylistManager.isPlaying) {
         const now = Date.now();
@@ -1797,7 +1796,6 @@ class AtmospheraController {
 
   /** Play a cached track directly without triggering generation. */
   async _playFromCache(cached, category) {
-    if (this._playbackLock) return;
     if (this._lastPlayTime && (Date.now() - this._lastPlayTime) < this._minPlayDuration) return;
 
     // Validate the cached sound still exists (user may have deleted it)
@@ -1811,7 +1809,6 @@ class AtmospheraController {
     const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
     const volume = game.settings.get(MODULE_ID, "masterVolume");
 
-    this._playbackLock = true;
     this._setStatus("Playing (cached)");
     this.currentTrackInfo = category;
     this._lastCategory = category;
@@ -1823,8 +1820,6 @@ class AtmospheraController {
       if (this.panel) this.panel.render();
     } catch (e) {
       console.error(`${MODULE_ID} | Cache playback failed:`, e);
-    } finally {
-      setTimeout(() => { this._playbackLock = false; }, 5000);
     }
   }
 
@@ -1849,13 +1844,14 @@ class AtmospheraController {
   evaluateAndPlay(force = false, options = {}) {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
 
-    // Respect playback lock
-    if (this._playbackLock) {
-      console.log(`${MODULE_ID} | Playback locked — skipping evaluation`);
+    // If currently generating, queue this as a pending evaluation instead of dropping it
+    if (this._generating) {
+      console.log(`${MODULE_ID} | Generation in progress — queuing evaluation`);
+      this._pendingEvaluation = { force, options };
       return;
     }
 
-    // Don't switch tracks within minimum play duration (unless forced by combat state change)
+    // Don't switch tracks within minimum play duration (unless forced by state change)
     if (!force && this._lastPlayTime && (Date.now() - this._lastPlayTime) < this._minPlayDuration) {
       return;
     }
@@ -2002,9 +1998,6 @@ class AtmospheraController {
       this.currentTrackInfo = category;
       if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
 
-      // Lock playback to prevent re-evaluation during startup
-      this._playbackLock = true;
-
       const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
       const volume = game.settings.get(MODULE_ID, "masterVolume");
       await FoundryPlaylistManager.play(url, category, {
@@ -2019,8 +2012,6 @@ class AtmospheraController {
       this._lastPlayTime = Date.now();
       this._dedup.record(prompt);
 
-      // Release lock after 5 seconds (allow audio to fully start)
-      setTimeout(() => { this._playbackLock = false; }, 5000);
       if (this.panel) this.panel.render();
     } catch (err) {
       this._consecutiveFailures = (this._consecutiveFailures || 0) + 1;
@@ -2060,17 +2051,21 @@ class AtmospheraController {
       }
     } finally {
       this._generating = false;
-      // Ensure lock releases even on error (with short grace period)
-      if (this._playbackLock) {
-        setTimeout(() => { this._playbackLock = false; }, 3000);
-      }
       this._refreshCredits();
 
+      // Process queued generation requests first (explicit triggerGeneration calls)
       if (this._queued) {
         const next = this._queued;
         this._queued = null;
         console.log(`${MODULE_ID} | Processing queued generation: ${next.category}`);
         this._doGenerate(next.prompt, next.title, next.category, next.options || {});
+      }
+      // Then process any pending evaluation (state changes that occurred during generation)
+      else if (this._pendingEvaluation) {
+        const pending = this._pendingEvaluation;
+        this._pendingEvaluation = null;
+        console.log(`${MODULE_ID} | Processing pending evaluation (state changed during generation)`);
+        this.evaluateAndPlay(pending.force, pending.options);
       }
     }
   }
