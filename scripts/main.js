@@ -796,15 +796,22 @@ class UdioClient {
     } finally {
       clearTimeout(timeout);
     }
-    // Retry once on 502/503 (PiAPI intermittent errors)
-    if ((resp.status === 502 || resp.status === 503) && !this._retrying) {
+    // Retry once on 5xx server errors (PiAPI intermittent issues)
+    if (resp.status >= 500 && !this._retrying) {
+      let errBody = "";
+      try { errBody = await resp.clone().text(); } catch {}
       this._retrying = true;
-      console.warn(`${MODULE_ID} | PiAPI returned ${resp.status}, retrying in 3s...`);
-      await new Promise(r => setTimeout(r, 3000));
+      console.warn(`${MODULE_ID} | PiAPI returned ${resp.status}, retrying in 5s... Body: ${errBody.slice(0, 500)}`);
+      await new Promise(r => setTimeout(r, 5000));
       try { return await this.createTask(prompt); } finally { this._retrying = false; }
     }
     this._retrying = false;
-    if (!resp.ok) throw new Error(`PiAPI create task failed: ${resp.status}`);
+    if (!resp.ok) {
+      let errBody = "";
+      try { errBody = await resp.text(); } catch {}
+      console.error(`${MODULE_ID} | PiAPI error response (${resp.status}): ${errBody.slice(0, 1000)}`);
+      throw new Error(`PiAPI create task failed: ${resp.status}`);
+    }
     const data = await resp.json();
     if (data.code !== 200) throw new Error(`PiAPI create task error: ${JSON.stringify(data)}`);
     return data.data.task_id;
