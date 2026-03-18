@@ -2444,7 +2444,13 @@ Hooks.once("ready", () => {
 
     // Exact bare command — open panel
     if (cmd === "/atmosphera" || cmd === "/atmo") {
-      controller.panel ? controller.panel.render(true) : controller.openPanel();
+      console.log(`${MODULE_ID} | /atmo command received — opening panel`);
+      try {
+        controller.openPanel();
+        console.log(`${MODULE_ID} | Panel opened successfully`);
+      } catch (e) {
+        console.error(`${MODULE_ID} | Panel open FAILED:`, e);
+      }
       return false;
     }
 
@@ -2483,8 +2489,10 @@ Hooks.once("ready", () => {
   // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
     try {
+      console.log(`${MODULE_ID} | getSceneControlButtons fired, type: ${typeof controls}, isArray: ${Array.isArray(controls)}, keys: ${typeof controls === "object" && !Array.isArray(controls) ? Object.keys(controls).join(",") : "N/A"}`);
       if (!Array.isArray(controls)) {
-        const group = controls.sounds || controls.ambient;
+        // v13: controls is an object. Try multiple possible group names.
+        const group = controls.sounds || controls.ambient || controls.audio;
         if (group && group.tools) {
           group.tools.atmosphera = {
             name: "atmosphera",
@@ -2495,15 +2503,20 @@ Hooks.once("ready", () => {
             visible: game.user.isGM,
             onChange: () => controller.openPanel()
           };
+          console.log(`${MODULE_ID} | Added scene control button to group`);
+        } else {
+          console.warn(`${MODULE_ID} | No sounds/ambient/audio group found in controls object`);
         }
       } else {
-        const group = controls.find(c => c.name === "sounds" || c.name === "ambient");
+        // v12: controls is an array
+        const group = controls.find(c => c.name === "sounds" || c.name === "ambient" || c.name === "audio");
         if (group) {
           group.tools.push({
             name: "atmosphera", title: "Atmosphera — AI Music",
             icon: "fa-solid fa-music", button: true,
             onClick: () => controller.openPanel()
           });
+          console.log(`${MODULE_ID} | Added scene control button to array group "${group.name}"`);
         }
       }
     } catch (e) {
@@ -2514,8 +2527,13 @@ Hooks.once("ready", () => {
   // ── Persistent button in the Players/UI area ──
   Hooks.on("renderPlayerList", (app, html) => {
     if (!game.user.isGM) return;
-    const existing = html[0]?.querySelector?.("#atmosphera-btn") || html.querySelector?.("#atmosphera-btn");
-    if (existing) return;
+    // v13: html is HTMLElement. v12: html is jQuery.
+    const root = html instanceof HTMLElement ? html : (html[0] || html);
+    if (!root || typeof root.querySelector !== "function") {
+      console.warn(`${MODULE_ID} | renderPlayerList: unexpected html type`, typeof html);
+      return;
+    }
+    if (root.querySelector("#atmosphera-btn")) return;
     const btn = document.createElement("button");
     btn.id = "atmosphera-btn";
     btn.type = "button";
@@ -2523,8 +2541,8 @@ Hooks.once("ready", () => {
     btn.innerHTML = '<i class="fa-solid fa-music"></i> Atmosphera';
     btn.style.cssText = "width:100%;margin-top:4px;padding:4px 8px;background:var(--color-shadow-primary,#2a1a4e);border:1px solid var(--color-border-light-tertiary,#7a5ba6);border-radius:4px;color:#e0d0ff;cursor:pointer;font-size:12px;";
     btn.addEventListener("click", () => controller.openPanel());
-    const target = html[0] || html;
-    target.appendChild(btn);
+    root.appendChild(btn);
+    console.log(`${MODULE_ID} | Added Atmosphera button to Players list`);
   });
 
   // ════════════════════════════════════════════════════════════════
