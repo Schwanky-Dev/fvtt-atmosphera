@@ -129,7 +129,7 @@ const DEFAULT_SCENE_NAMES = new Set([
 /* ──────────────────────────── RESOURCE THRESHOLDS ──────────────────────────── */
 
 const RESOURCE_DESCRIPTORS = {
-  fresh: { min: 0.75, prompt: "well-rested, prepared, confident" },
+  fresh: { min: 0.75, prompt: null },
   moderate: { min: 0.40, prompt: null },
   low: { min: 0.15, prompt: "tension rising, resources dwindling, urgent" },
   critical: { min: 0, prompt: "desperate, last reserves, do-or-die intensity" }
@@ -198,8 +198,10 @@ class PromptDeduplicator {
   }
 
   _tokenize(str) {
+    // Strip bracketed section labels like [Style: ...] → just the content words
+    const stripped = str.replace(/\[[A-Za-z]+:\s*/g, "").replace(/\]/g, "");
     return new Set(
-      str.toLowerCase().split(/[\s,]+/)
+      stripped.toLowerCase().split(/[\s,]+/)
         .filter(w => w.length > 2 && !PromptDeduplicator.SKIP_WORDS.has(w))
     );
   }
@@ -466,13 +468,19 @@ class GameStateCollector {
     const bossFlag = combat.hasBoss ? "|BOSS" : "";
     const bossAlive = combat.bosses.filter(b => !b.isDead).length;
 
-    // If HP dropped >25% from last check, include a changing marker to force regen
-    let hpMarker = "";
-    if (partyHpPct !== null && lastHpPct !== null && (lastHpPct - partyHpPct) > 0.25) {
-      hpMarker = `|HPDROP-${Math.round(partyHpPct * 100)}`;
+    // Include current round number so every new round changes the signature
+    const round = combatDoc?.round || 0;
+
+    // Coarse HP bracket: any bracket change triggers regen
+    let hpBracket = "HP100";
+    if (partyHpPct !== null) {
+      if (partyHpPct <= 0.25) hpBracket = "HP25";
+      else if (partyHpPct <= 0.50) hpBracket = "HP50";
+      else if (partyHpPct <= 0.75) hpBracket = "HP75";
+      else hpBracket = "HP100";
     }
 
-    return `${types}|ids:${ids.join(",")}|h${hostileCount}f${friendlyCount}|${bossAlive}b${bossFlag}${hpMarker}`;
+    return `${types}|ids:${ids.join(",")}|h${hostileCount}f${friendlyCount}|${bossAlive}b${bossFlag}|R${round}|${hpBracket}`;
   }
 }
 
@@ -481,43 +489,61 @@ class GameStateCollector {
 class PromptBuilder {
 
   static build(state, moodOverride = null, hpContext = null) {
-    const hpLeadParts = [];  // HP descriptors placed FIRST for heavy influence
-    const parts = [];
     const prefix = game.settings.get(MODULE_ID, "promptPrefix")?.trim();
-
-    parts.push("instrumental");
-    if (prefix) parts.push(prefix);
-
-    if (moodOverride && moodOverride !== "auto") {
-      const preset = MOOD_PRESETS[moodOverride];
-      parts.push(preset || moodOverride);
-    }
-
     const { combat, party, scene } = state;
     let category = "ambient";
 
+    // ── Style section ──
+    const styleParts = ["instrumental"];
+    if (prefix) styleParts.push(prefix);
     if (combat.active) {
-      category = this._buildCombatCategory(combat);
-      parts.push(this._buildCombatPrompt(combat, party));
+      if (combat.hasBoss) styleParts.push("orchestral", "cinematic", "choir");
+      else styleParts.push("percussion", "adrenaline");
+      // Genre hints from mood/combat intensity
+      if (combat.crRange?.max >= 15) styleParts.push("epic", "legendary");
+      else if (combat.crRange?.max >= 10) styleParts.push("epic", "powerful");
     } else {
-      category = this._buildAmbientCategory(scene);
-      parts.push(this._buildAmbientPrompt(scene));
+      // Ambient genre hints from scene keywords
+      if (scene.keywords.length) {
+        for (const kw of scene.keywords.slice(0, 2)) {
+          if (SCENE_KEYWORD_HINTS[kw]) styleParts.push(SCENE_KEYWORD_HINTS[kw]);
+        }
+      }
+    }
+    if (moodOverride && moodOverride !== "auto") {
+      const preset = MOOD_PRESETS[moodOverride];
+      styleParts.push(preset || moodOverride);
     }
 
-    // HP as a MAJOR tone driver — not just an afterthought
+    // ── Scene section ──
+    const sceneName = scene.name || "";
+
+    // ── Mood section ──
+    const moodParts = [];
     const hpPct = party.hpPct;
     const hpDesc = getDescriptor(hpPct, HP_DESCRIPTORS);
-
     if (hpPct < 0.25) {
-      // Critical: place HP FIRST, add urgent modifiers, alter category
-      hpLeadParts.push("dire peril, last stand, heroic struggle, do-or-die, desperate, fading hope, on the edge of death");
-      category += "-desperate";
-    } else if (hpPct < 0.40) {
-      // Bloodied: place HP FIRST to heavily influence tone
-      hpLeadParts.push(`party ${hpDesc}`);
+      moodParts.push("dire peril", "last stand", "desperate", "fading hope");
+      category = combat.active ? this._buildCombatCategory(combat) + "-desperate" : this._buildAmbientCategory(scene) + "-desperate";
     } else if (hpDesc) {
-      // Normal range with a descriptor — append normally
-      parts.push(`party ${hpDesc}`);
+      moodParts.push(hpDesc);
+    }
+    // Atmospheric modifiers for variety
+    const modifiers = _pickRandomN(ATMOSPHERIC_MODIFIERS, 1 + Math.floor(Math.random() * 2));
+    moodParts.push(...modifiers);
+    // Resource descriptors
+    const resDesc = getDescriptor(party.resourcePct, RESOURCE_DESCRIPTORS);
+    if (resDesc) moodParts.push(resDesc);
+    // Time-of-day from darkness
+    const darknessLevel = scene.darkness ?? 0;
+    if (darknessLevel > 0.7) moodParts.push("nighttime", "dark", "torchlit");
+    else if (darknessLevel > 0.3) moodParts.push("twilight", "dim", "moody");
+    else moodParts.push("daytime", "bright");
+    if (scene.weather) moodParts.push(`${scene.weather} weather`);
+
+    // ── Build category (before sections) ──
+    if (category === "ambient") {
+      category = combat.active ? this._buildCombatCategory(combat) : this._buildAmbientCategory(scene);
     }
 
     // Track significant HP drops during combat to force regeneration
@@ -528,20 +554,45 @@ class PromptBuilder {
       }
     }
 
-    const resDesc = getDescriptor(party.resourcePct, RESOURCE_DESCRIPTORS);
-    if (resDesc) parts.push(resDesc);
+    // ── Creatures section (combat only) ──
+    const creatureParts = [];
+    if (combat.active) {
+      const aliveCreatures = combat.creatures.filter(c => !c.isDead);
+      const creatureNames = [...new Set(aliveCreatures.map(c => c.name))].slice(0, 4);
+      if (creatureNames.length) creatureParts.push(...creatureNames);
+      for (const type of combat.creatureTypes.slice(0, 3)) {
+        if (CREATURE_HINTS[type]) creatureParts.push(CREATURE_HINTS[type]);
+      }
+    }
 
-    // Add 1-2 random atmospheric modifiers for variety
-    const modifiers = _pickRandomN(ATMOSPHERIC_MODIFIERS, 1 + Math.floor(Math.random() * 2));
-    parts.push(...modifiers);
+    // ── Combat section (combat only) ──
+    const combatParts = [];
+    if (combat.active) {
+      // Read round directly from game.combat for real-time accuracy
+      const currentRound = game.combat?.round || combat.round || 1;
+      combatParts.push(`round ${currentRound}`);
+      combatParts.push(`party at ${Math.round(hpPct * 100)}% health`);
+      if (combat.crRange) {
+        if (combat.crRange.max >= 15) combatParts.push("legendary threat");
+        else if (combat.crRange.max >= 10) combatParts.push("powerful enemies");
+        else if (combat.crRange.max >= 5) combatParts.push("challenging foes");
+      }
+      if (combat.hasBoss) {
+        const bossNames = combat.bosses.filter(b => !b.isDead).map(b => b.name);
+        combatParts.push(`boss fight: ${bossNames.join(" and ")}`);
+      }
+    }
 
-    // Combine: HP lead parts go FIRST for maximum influence on generation
-    const allParts = [...hpLeadParts, ...parts];
+    // ── Assemble structured prompt ──
+    const sections = [];
+    sections.push(`[Style: ${styleParts.filter(Boolean).join(", ")}]`);
+    if (sceneName) sections.push(`[Scene: ${sceneName}]`);
+    if (moodParts.length) sections.push(`[Mood: ${moodParts.filter(Boolean).join(", ")}]`);
+    if (creatureParts.length) sections.push(`[Creatures: ${creatureParts.filter(Boolean).join(", ")}]`);
+    if (combatParts.length) sections.push(`[Combat: ${combatParts.filter(Boolean).join(", ")}]`);
+    sections.push("[Loop: seamless loop, loopable, continuous]");
 
-    // Append loop-friendly hints AFTER main content (for all prompts)
-    allParts.push("seamless loop, loopable, no fade in, no fade out, continuous");
-
-    const prompt = allParts.filter(Boolean).join(", ").replace(/,\s*,/g, ",").replace(/\s+/g, " ").trim();
+    const prompt = sections.join(" ").replace(/\s+/g, " ").trim();
     const title = this._buildTitle(combat, scene);
 
     return { prompt, category, title };
@@ -977,9 +1028,9 @@ class PlaylistSearcher {
     for (const playlist of game.playlists || []) {
       if (!playlist.sounds.size) continue;
 
-      // Skip Atmosphera-managed playlists — those are handled by _findExact/_findFuzzy
+      // Only search Atmosphera-managed playlists — don't hijack user's own playlists
       const isAtmosphera = playlist.getFlag(MODULE_ID, "managed") === true;
-      if (isAtmosphera) continue;
+      if (!isAtmosphera) continue;
 
       const playlistText = (playlist.name + " " + (playlist.description || "")).toLowerCase();
 
@@ -1009,7 +1060,7 @@ class PlaylistSearcher {
       }
     }
 
-    if (bestMatch && bestScore >= 0.3) {
+    if (bestMatch && bestScore >= 0.6) {
       console.log(`${MODULE_ID} | Playlist search: "${category}" → "${bestMatch.sound.name}" in "${bestMatch.playlist.name}" (score: ${Math.round(bestScore * 100)}%, source: ${bestMatch.source})`);
       return bestMatch;
     }
@@ -1025,7 +1076,12 @@ class PlaylistSearcher {
       if (cleaned && cleaned.length > 2) words.add(cleaned);
     }
 
-    const skipWords = new Set(["instrumental", "music", "background", "the", "and", "for", "with", "from", "that", "this", "party", "fighting"]);
+    const skipWords = new Set([
+      "instrumental", "music", "background", "the", "and", "for", "with",
+      "from", "that", "this", "party", "fighting", "ambient", "scene",
+      "combat", "boss", "sting", "general", "loop", "seamless", "loopable",
+      "continuous", "fade"
+    ]);
     for (const word of prompt.toLowerCase().split(/[\s,]+/)) {
       const cleaned = word.replace(/[^a-z]/g, "");
       if (cleaned.length > 3 && !skipWords.has(cleaned)) words.add(cleaned);
@@ -1085,7 +1141,7 @@ class PlaylistCacheManager {
     const playlist = game.playlists?.find(p => p.name === playlistName);
     if (!playlist || !playlist.sounds.size) return null;
 
-    // Prefer sounds flagged with this exact category, validate each
+    // ONLY return sounds flagged with this exact category — no fallback
     const matchingSounds = [...playlist.sounds].filter(s =>
       s.getFlag(MODULE_ID, "category") === category && this._soundIsValid(playlist, s)
     );
@@ -1094,11 +1150,7 @@ class PlaylistCacheManager {
       return { playlist, sound, url: sound.path, category, fuzzy: false };
     }
 
-    // Fallback: any valid sound in the playlist
-    const sounds = [...playlist.sounds].filter(s => this._soundIsValid(playlist, s));
-    if (!sounds.length) return null;
-    const sound = sounds[Math.floor(Math.random() * sounds.length)];
-    return { playlist, sound, url: sound.path, category, fuzzy: false };
+    return null;
   }
 
   static _findFuzzy(category) {
@@ -2524,6 +2576,10 @@ Hooks.once("ready", () => {
 
     const party = GameStateCollector._collectParty();
     const newSig = GameStateCollector.combatSignature(party.hpPct, controller._lastHpPct);
+
+    // ALWAYS update tracked HP so it's never stale on next evaluation
+    controller._lastHpPct = party.hpPct;
+
     if (newSig === controller._lastCombatSignature) {
       console.log(`${MODULE_ID} | Round changed but combat composition unchanged — skipping`);
       return;
