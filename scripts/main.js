@@ -2461,13 +2461,7 @@ Hooks.once("ready", () => {
 
     // Exact bare command — open panel
     if (cmd === "/atmosphera" || cmd === "/atmo") {
-      console.log(`${MODULE_ID} | /atmo command received — opening panel`);
-      try {
-        controller.openPanel();
-        console.log(`${MODULE_ID} | Panel opened successfully`);
-      } catch (e) {
-        console.error(`${MODULE_ID} | Panel open FAILED:`, e);
-      }
+      controller.openPanel();
       return false;
     }
 
@@ -2527,9 +2521,8 @@ Hooks.once("ready", () => {
   // ── Scene control button ──
   Hooks.on("getSceneControlButtons", (controls) => {
     try {
-      console.log(`${MODULE_ID} | getSceneControlButtons fired, type: ${typeof controls}, isArray: ${Array.isArray(controls)}, keys: ${typeof controls === "object" && !Array.isArray(controls) ? Object.keys(controls).join(",") : "N/A"}`);
       if (!Array.isArray(controls)) {
-        // v13: controls is an object. Try multiple possible group names.
+        // v13: controls is an object
         const group = controls.sounds || controls.ambient || controls.audio;
         if (group && group.tools) {
           group.tools.atmosphera = {
@@ -2541,9 +2534,6 @@ Hooks.once("ready", () => {
             visible: game.user.isGM,
             onChange: () => controller.openPanel()
           };
-          console.log(`${MODULE_ID} | Added scene control button to group`);
-        } else {
-          console.warn(`${MODULE_ID} | No sounds/ambient/audio group found in controls object`);
         }
       } else {
         // v12: controls is an array
@@ -2554,7 +2544,6 @@ Hooks.once("ready", () => {
             icon: "fa-solid fa-music", button: true,
             onClick: () => controller.openPanel()
           });
-          console.log(`${MODULE_ID} | Added scene control button to array group "${group.name}"`);
         }
       }
     } catch (e) {
@@ -2580,7 +2569,6 @@ Hooks.once("ready", () => {
     btn.style.cssText = "width:100%;margin-top:4px;padding:4px 8px;background:var(--color-shadow-primary,#2a1a4e);border:1px solid var(--color-border-light-tertiary,#7a5ba6);border-radius:4px;color:#e0d0ff;cursor:pointer;font-size:12px;";
     btn.addEventListener("click", () => controller.openPanel());
     root.appendChild(btn);
-    console.log(`${MODULE_ID} | Added Atmosphera button to Players list`);
   });
 
   // ════════════════════════════════════════════════════════════════
