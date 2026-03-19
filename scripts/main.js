@@ -1,6 +1,6 @@
 /**
  * Atmosphera — AI-powered dynamic atmosphere music for FoundryVTT
- * v0.8.2 — ApplicationV2 migration, consolidated playlists, generation cooldown,
+ * v0.8.3 — ApplicationV2 migration, consolidated playlists, generation cooldown,
  *           scene variety timer, richer prompts, dedup detection.
  */
 
@@ -2292,7 +2292,7 @@ class AtmospheraSetupWizard {
       <p>Atmosphera generates dynamic background music using <strong>Udio</strong> (via <strong>PiAPI</strong>).
       It reads your game state — scenes, combat, party health — and automatically creates
       fitting instrumental soundtracks.</p>
-      <p><strong>New in v0.8.2:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
+      <p><strong>New in v0.8.3:</strong> Consolidated playlists, generation cooldown, scene variety timer, richer prompts!</p>
       <p>You'll need:</p>
       <ul>
         <li>A <strong>PiAPI API key</strong> — <a href="https://piapi.ai" target="_blank">piapi.ai</a></li>
@@ -2416,7 +2416,7 @@ class AtmospheraSetupWizard {
 
 Hooks.once("init", () => {
   registerSettings();
-  console.log(`${MODULE_ID} | Initializing Atmosphera v0.8.2`);
+  console.log(`${MODULE_ID} | Initializing Atmosphera v0.8.3`);
 });
 
 Hooks.once("ready", () => {
@@ -2758,7 +2758,7 @@ Hooks.once("ready", () => {
     }
   });
 
-  ui.notifications.info("Atmosphera v0.8.2 ready — music syncs to all players via Foundry playlists.");
+  ui.notifications.info("Atmosphera v0.8.3 ready — music syncs to all players via Foundry playlists.");
 
   // ── Auto-create macro (fire and forget — v13 error is cosmetic) ──
   // The startsWith error WILL fire in console but the macro DOES get created.
