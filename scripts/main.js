@@ -335,7 +335,12 @@ class GameStateCollector {
 
   static _collectCombat() {
     const combat = game.combat;
-    if (!combat?.active) return { active: false, round: 0, turn: 0, creatures: [], bosses: [], hasBoss: false, creatureTypes: [], crRange: null };
+    // Only use combat if it belongs to the ACTIVE scene — ignore combats on other scenes
+    const activeSceneId = game.scenes?.active?.id;
+    const combatSceneId = combat?.scene?.id;
+    if (!combat?.active || (activeSceneId && combatSceneId && combatSceneId !== activeSceneId)) {
+      return { active: false, round: 0, turn: 0, creatures: [], bosses: [], hasBoss: false, creatureTypes: [], crRange: null };
+    }
 
     const creatures = [];
     const bosses = [];
@@ -530,7 +535,9 @@ class PromptBuilder {
     }
     if (moodOverride && moodOverride !== "auto") {
       const preset = MOOD_PRESETS[moodOverride];
-      styleParts.push(preset || moodOverride);
+      // Mood override is HIGH PRIORITY — prepend it so Udio weights it heavily
+      if (preset) styleParts.unshift(preset);
+      else styleParts.unshift(moodOverride);
     }
 
     // ── Scene section ──
@@ -1475,12 +1482,12 @@ class AtmospheraPanel {
   }
 
   render(force = false) {
-    if (this._dialog && !force) {
-      // Just update the inner content
+    if (this._dialog) {
+      // Dialog already open — just update live fields in-place, no re-render
       this._updateContent();
       return;
     }
-    this._show();
+    if (force) this._show();
   }
 
   close() {
@@ -1489,9 +1496,7 @@ class AtmospheraPanel {
   }
 
   _show() {
-    if (this._dialog) {
-      try { this._dialog.close(); } catch {}
-    }
+    if (this._dialog) return; // Already open — don't re-create
 
     const content = this._buildHTML();
 
@@ -1502,7 +1507,7 @@ class AtmospheraPanel {
       render: (html) => this._activateListeners(html),
       close: () => { this._dialog = null; }
     }, {
-      width: 380,
+      width: 400,
       height: "auto",
       resizable: true,
       classes: ["atmosphera-panel-dialog"]
@@ -1513,39 +1518,41 @@ class AtmospheraPanel {
 
   _buildHTML() {
     const c = this.controller;
-    const isAuto = c.autoMode;
-    const isPlaying = FoundryPlaylistManager.isPlaying;
-    const manualMood = c.manualMood;
     const enabled = game.settings.get(MODULE_ID, "enabled");
+    const seedPrompt = game.settings.get(MODULE_ID, "promptPrefix") || "";
 
     const moodOptions = Object.keys(MOOD_PRESETS).map(k =>
-      `<option value="${k}" ${manualMood === k ? "selected" : ""}>${k.replace(/^\w/, ch => ch.toUpperCase())}</option>`
+      `<option value="${k}" ${c.manualMood === k ? "selected" : ""}>${k.replace(/^\w/, ch => ch.toUpperCase())}</option>`
     ).join("");
 
     return `
       <div class="atmosphera-controls" style="display:flex;flex-direction:column;gap:8px;">
         <div style="display:flex;gap:6px;">
-          <button id="atmo-enabled-toggle" style="flex:1;padding:4px 8px;${enabled ? "background:#2d5a2d;color:#8f8;" : "background:#5a2d2d;color:#f88;"}">${enabled ? "🔊 Enabled" : "🔇 Disabled"}</button>
-          <button id="atmo-auto-toggle" style="flex:1;padding:4px 8px;${isAuto ? "background:#2d3d5a;color:#8af;" : "background:#5a4a2d;color:#fa8;"}">${isAuto ? "🔄 Auto" : "🔒 Manual"}</button>
+          <button id="atmo-enabled-toggle" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;font-weight:bold;${enabled ? "background:#2d5a2d;color:#8f8;border:1px solid #4a4;" : "background:#5a2d2d;color:#f88;border:1px solid #a44;"}">${enabled ? "🔊 Enabled" : "🔇 Disabled"}</button>
+          <button id="atmo-auto-toggle" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;font-weight:bold;${c.autoMode ? "background:#2d3d5a;color:#8af;border:1px solid #48a;" : "background:#5a4a2d;color:#fa8;border:1px solid #a84;"}">${c.autoMode ? "🔄 Auto" : "🔒 Manual"}</button>
         </div>
-        ${!isAuto && manualMood ? `<div style="font-size:11px;color:#fa8;">🔒 Manual — ${manualMood}</div>` : ""}
 
         <div>
           <label style="font-size:11px;font-weight:bold;">Mood Override</label>
           <select id="atmo-mood-select" style="width:100%;margin-top:2px;">
-            <option value="">— Select Mood —</option>
+            <option value="">— Auto (from game state) —</option>
             ${moodOptions}
           </select>
         </div>
 
         <div>
-          <label style="font-size:11px;font-weight:bold;">Current Prompt</label>
+          <label style="font-size:11px;font-weight:bold;">Seed Prompt <span style="font-weight:normal;color:#888;">(style for all generations)</span></label>
+          <input type="text" id="atmo-seed-prompt" value="${seedPrompt.replace(/"/g, '&quot;')}" placeholder='e.g. "orchestral cinematic", "dark ambient electronic"' style="width:100%;font-size:11px;margin-top:2px;">
+        </div>
+
+        <div>
+          <label style="font-size:11px;font-weight:bold;">Current Prompt <span style="font-weight:normal;color:#888;">(edit to override)</span></label>
           <textarea id="atmo-prompt-display" rows="3" style="width:100%;font-size:11px;resize:vertical;margin-top:2px;">${c.currentPrompt || "(none)"}</textarea>
         </div>
 
         <div style="display:flex;gap:6px;">
-          <button id="atmo-play" style="flex:1;padding:4px 8px;">${isPlaying ? "▶ Playing" : "▶ Generate & Play"}</button>
-          <button id="atmo-stop" style="flex:1;padding:4px 8px;">⏹ Stop</button>
+          <button id="atmo-play" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#2d5a2d;color:#8f8;border:1px solid #4a4;font-weight:bold;">▶ Generate & Play</button>
+          <button id="atmo-stop" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#5a2d2d;color:#f88;border:1px solid #a44;font-weight:bold;">⏹ Stop</button>
         </div>
 
         <div>
@@ -1553,22 +1560,44 @@ class AtmospheraPanel {
           <input type="range" id="atmo-volume" min="0" max="1" step="0.05" value="${game.settings.get(MODULE_ID, "masterVolume")}" style="width:100%;">
         </div>
 
-        <div style="border-top:1px solid #444;padding-top:6px;font-size:11px;color:#aaa;">
-          <div id="atmo-gen-status">${c.generationStatus || "Idle"}</div>
-          <div id="atmo-track-info">${c.currentTrackInfo || ""}</div>
+        <div style="border-top:1px solid #444;padding-top:6px;font-size:11px;">
+          <div id="atmo-gen-status" style="color:#aaa;">${c.generationStatus || "Idle"}</div>
+          <div id="atmo-track-info" style="color:#888;margin-top:2px;">${c.currentTrackInfo || ""}</div>
         </div>
       </div>
     `;
   }
 
+  /** Update live fields in-place without closing/reopening the dialog */
   _updateContent() {
-    // Update live elements without re-rendering the whole dialog
-    const status = document.getElementById("atmo-gen-status");
-    if (status) status.textContent = this.controller.generationStatus || "Idle";
-    const track = document.getElementById("atmo-track-info");
-    if (track) track.textContent = this.controller.currentTrackInfo || "";
-    const prompt = document.getElementById("atmo-prompt-display");
-    if (prompt && document.activeElement !== prompt) prompt.value = this.controller.currentPrompt || "(none)";
+    const c = this.controller;
+    const el = (id) => document.getElementById(id);
+
+    const status = el("atmo-gen-status");
+    if (status) status.textContent = c.generationStatus || "Idle";
+
+    const track = el("atmo-track-info");
+    if (track) track.textContent = c.currentTrackInfo || "";
+
+    const prompt = el("atmo-prompt-display");
+    if (prompt && document.activeElement !== prompt) prompt.value = c.currentPrompt || "(none)";
+
+    // Update button states without re-rendering
+    const enableBtn = el("atmo-enabled-toggle");
+    if (enableBtn) {
+      const enabled = game.settings.get(MODULE_ID, "enabled");
+      enableBtn.textContent = enabled ? "🔊 Enabled" : "🔇 Disabled";
+      enableBtn.style.background = enabled ? "#2d5a2d" : "#5a2d2d";
+      enableBtn.style.color = enabled ? "#8f8" : "#f88";
+      enableBtn.style.borderColor = enabled ? "#4a4" : "#a44";
+    }
+    const autoBtn = el("atmo-auto-toggle");
+    if (autoBtn) {
+      autoBtn.textContent = c.autoMode ? "🔄 Auto" : "🔒 Manual";
+      autoBtn.style.background = c.autoMode ? "#2d3d5a" : "#5a4a2d";
+      autoBtn.style.color = c.autoMode ? "#8af" : "#fa8";
+      autoBtn.style.borderColor = c.autoMode ? "#48a" : "#a84";
+    }
   }
 
   _activateListeners(html) {
@@ -1580,27 +1609,46 @@ class AtmospheraPanel {
       game.settings.set(MODULE_ID, "enabled", newVal);
       if (newVal) c.evaluateAndPlay(true);
       else c.stop();
-      setTimeout(() => panel._show(), 200);
+      panel._updateContent();
     });
 
     html.find("#atmo-auto-toggle").on("click", () => {
       c.autoMode = !c.autoMode;
       if (c.autoMode) { c.manualMood = null; c.evaluateAndPlay(true); }
-      setTimeout(() => panel._show(), 200);
+      panel._updateContent();
     });
 
     html.find("#atmo-mood-select").on("change", function() {
-      if (this.value) c.setMood(this.value);
+      if (this.value) {
+        c.setMood(this.value);
+      } else {
+        // "Auto" selected — reset to auto mode
+        c.autoMode = true;
+        c.manualMood = null;
+        c.evaluateAndPlay(true);
+      }
+      panel._updateContent();
+    });
+
+    html.find("#atmo-seed-prompt").on("change", function() {
+      game.settings.set(MODULE_ID, "promptPrefix", this.value.trim());
+      console.log(`${MODULE_ID} | Seed prompt updated: "${this.value.trim()}"`);
     });
 
     html.find("#atmo-play").on("click", () => {
-      const textarea = html.find("#atmo-prompt-display");
-      c.triggerGeneration(textarea?.val());
+      // Read the ACTUAL textarea value (user may have edited it)
+      const promptEl = document.getElementById("atmo-prompt-display");
+      const customPrompt = promptEl ? promptEl.value.trim() : "";
+      if (customPrompt && customPrompt !== "(none)") {
+        c.triggerGeneration(customPrompt);
+      } else {
+        c.triggerGeneration();
+      }
     });
 
     html.find("#atmo-stop").on("click", () => {
       c.stop();
-      setTimeout(() => panel._show(), 200);
+      panel._updateContent();
     });
 
     html.find("#atmo-volume").on("input", function() {
@@ -1616,7 +1664,7 @@ class AtmospheraPanel {
     if (el) el.textContent = status;
   }
 
-  updateCredits(credits) { /* no-op for simplified panel */ }
+  updateCredits(credits) { /* no-op */ }
 
   updatePrompt(prompt) {
     const el = document.getElementById("atmo-prompt-display");
@@ -2411,7 +2459,28 @@ Hooks.once("ready", () => {
         return false;
       }
       if (sub === "help") {
-        ui.notifications.info("Atmosphera commands: /atmo, /atmo stop, /atmo panel, /atmo auth, /atmo setup, /atmo <mood>");
+        ui.notifications.info("Atmosphera: /atmo (panel), /atmo stop, /atmo macro, /atmo setup, /atmo &lt;mood&gt;");
+        return false;
+      }
+      if (sub === "macro") {
+        // Create macro via direct script execution to avoid socket ack issues
+        const macroName = "Atmosphera Panel";
+        const existing = game.macros?.find(m => m.name === macroName);
+        if (existing) {
+          ui.notifications.info(`Atmosphera: Macro "${macroName}" already exists. Drag it to your hotbar.`);
+        } else {
+          Macro.create({
+            name: macroName,
+            type: "script",
+            command: `game.modules.get("atmosphera")?.api?.openPanel();`,
+            img: "icons/svg/sound.svg"
+          }).then(() => {
+            ui.notifications.info(`Atmosphera: Created "${macroName}" macro. Drag it to your hotbar. (Ignore any console errors — they're a Foundry v13 bug.)`);
+          }).catch(() => {
+            // v13 socket ack bug — macro likely created despite error
+            ui.notifications.info(`Atmosphera: Macro created (ignore any console errors). Check your macro directory.`);
+          });
+        }
         return false;
       }
       if (sub === "stop") {
