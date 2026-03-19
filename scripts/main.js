@@ -1604,12 +1604,13 @@ class AtmospheraPanel {
     const c = this.controller;
     const panel = this;
 
-    html.find("#atmo-enabled-toggle").on("click", () => {
+    html.find("#atmo-enabled-toggle").on("click", async () => {
       const newVal = !game.settings.get(MODULE_ID, "enabled");
-      game.settings.set(MODULE_ID, "enabled", newVal);
+      await game.settings.set(MODULE_ID, "enabled", newVal);
       if (newVal) c.evaluateAndPlay(true);
       else c.stop();
-      panel._updateContent();
+      // Delay slightly so settings propagate before UI update
+      setTimeout(() => panel._updateContent(), 100);
     });
 
     html.find("#atmo-auto-toggle").on("click", () => {
@@ -1932,7 +1933,13 @@ class AtmospheraController {
   triggerGeneration(customPrompt) {
     const prompt = customPrompt || this.currentPrompt;
     const prefix = game.settings.get(MODULE_ID, "titlePrefix") || "Atmosphera";
-    this._doGenerate(prompt, `${prefix} — Custom`, this.currentCategory || "custom");
+    // Manual generation: bypass ALL cooldowns, dedup, and cache checks
+    // Force new generation regardless of what's playing
+    this._forceNewGeneration = true;
+    this._lastCategory = null;
+    this._adaptiveCooldownUntil = 0; // Reset cooldown
+    this._dedup.clear(); // Clear dedup so the prompt isn't rejected as "similar"
+    this._doGenerate(prompt, `${prefix} — Custom`, this.currentCategory || "custom", { bypassCooldown: true });
   }
 
   async _doGenerateOnly(prompt, title, category) {
