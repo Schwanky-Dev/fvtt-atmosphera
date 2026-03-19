@@ -1461,39 +1461,57 @@ class PlaylistCacheManager {
   }
 }
 
-/* ──────────────────────────── CONTROL PANEL (ApplicationV2) ──────────────── */
+/* ──────────────────────────── CONTROL PANEL (Dialog-based for v13 compat) ── */
 
-class AtmospheraPanel extends foundry.applications.api.HandlebarsApplicationMixin(
-  foundry.applications.api.ApplicationV2
-) {
-  static DEFAULT_OPTIONS = {
-    id: "atmosphera-panel",
-    window: {
-      title: "🎵 Atmosphera",
-      resizable: false
-    },
-    position: {
-      width: 360,
-      height: "auto",
-      top: 80,
-      left: 20
-    },
-    classes: ["atmosphera-panel"]
-  };
-
-  static PARTS = {
-    main: {
-      template: undefined // We use inline rendering
-    }
-  };
-
-  constructor(controller, options = {}) {
-    super(options);
+/**
+ * Uses Foundry's v1 Dialog API — works on ALL Foundry versions, no
+ * ApplicationV2, no socket ack issues. The panel is a persistent Dialog
+ * that re-renders its content when state changes.
+ */
+class AtmospheraPanel {
+  constructor(controller) {
     this.controller = controller;
+    this._dialog = null;
   }
 
-  /** Override _renderHTML to provide inline HTML instead of a template file. */
-  async _renderHTML(_context, _options) {
+  render(force = false) {
+    if (this._dialog && !force) {
+      // Just update the inner content
+      this._updateContent();
+      return;
+    }
+    this._show();
+  }
+
+  close() {
+    try { this._dialog?.close(); } catch {}
+    this._dialog = null;
+  }
+
+  _show() {
+    if (this._dialog) {
+      try { this._dialog.close(); } catch {}
+    }
+
+    const content = this._buildHTML();
+
+    this._dialog = new Dialog({
+      title: "🎵 Atmosphera",
+      content,
+      buttons: {},
+      render: (html) => this._activateListeners(html),
+      close: () => { this._dialog = null; }
+    }, {
+      width: 380,
+      height: "auto",
+      resizable: true,
+      classes: ["atmosphera-panel-dialog"]
+    });
+
+    this._dialog.render(true);
+  }
+
+  _buildHTML() {
     const c = this.controller;
     const isAuto = c.autoMode;
     const isPlaying = FoundryPlaylistManager.isPlaying;
@@ -1504,196 +1522,101 @@ class AtmospheraPanel extends foundry.applications.api.HandlebarsApplicationMixi
       `<option value="${k}" ${manualMood === k ? "selected" : ""}>${k.replace(/^\w/, ch => ch.toUpperCase())}</option>`
     ).join("");
 
-    const preloadStatus = c._preloadStatus
-      ? `<div class="atmo-preload-status">⏳ Preloading: ${c._preloadStatus}</div>` : "";
-
-    const cooldownSec = game.settings.get(MODULE_ID, "generationCooldown");
-    const refreshMin = game.settings.get(MODULE_ID, "sceneRefreshInterval");
-
-    const htmlString = `
-      <div class="atmosphera-controls">
-        <div class="atmo-section">
-          <label>Master</label>
-          <div class="atmo-mode-toggle">
-            <button id="atmo-enabled-toggle" class="${enabled ? "active" : ""}" title="Master on/off — music plays automatically when enabled">
-              ${enabled ? "🔊 Enabled" : "🔇 Disabled"}
-            </button>
-            <button id="atmo-auto-toggle" class="${isAuto ? "active" : ""}" title="${isAuto ? "Auto mode — reads game state" : "Manual — GM override active"}">
-              ${isAuto ? "🔄 Auto" : "🔒 Manual"}
-            </button>
-          </div>
-          ${!isAuto && manualMood ? `<span class="atmo-manual-indicator">🔒 Manual — ${manualMood}</span>` : ""}
+    return `
+      <div class="atmosphera-controls" style="display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;gap:6px;">
+          <button id="atmo-enabled-toggle" style="flex:1;padding:4px 8px;${enabled ? "background:#2d5a2d;color:#8f8;" : "background:#5a2d2d;color:#f88;"}">${enabled ? "🔊 Enabled" : "🔇 Disabled"}</button>
+          <button id="atmo-auto-toggle" style="flex:1;padding:4px 8px;${isAuto ? "background:#2d3d5a;color:#8af;" : "background:#5a4a2d;color:#fa8;"}">${isAuto ? "🔄 Auto" : "🔒 Manual"}</button>
         </div>
+        ${!isAuto && manualMood ? `<div style="font-size:11px;color:#fa8;">🔒 Manual — ${manualMood}</div>` : ""}
 
-        <div class="atmo-section">
-          <label>Mood Override</label>
-          <select id="atmo-mood-select">
+        <div>
+          <label style="font-size:11px;font-weight:bold;">Mood Override</label>
+          <select id="atmo-mood-select" style="width:100%;margin-top:2px;">
             <option value="">— Select Mood —</option>
             ${moodOptions}
           </select>
         </div>
 
-        <div class="atmo-section">
-          <label>Current Prompt</label>
-          <textarea id="atmo-prompt-display" rows="3" style="width:100%;font-size:11px;resize:vertical;">${c.currentPrompt || "(none)"}</textarea>
+        <div>
+          <label style="font-size:11px;font-weight:bold;">Current Prompt</label>
+          <textarea id="atmo-prompt-display" rows="3" style="width:100%;font-size:11px;resize:vertical;margin-top:2px;">${c.currentPrompt || "(none)"}</textarea>
         </div>
 
-        <div class="atmo-section atmo-buttons">
-          <button id="atmo-play" class="${isPlaying ? "active" : ""}">
-            <i class="fas fa-play"></i> ${isPlaying ? "Playing" : "Generate & Play"}
-          </button>
-          <button id="atmo-stop">
-            <i class="fas fa-stop"></i> Stop
-          </button>
+        <div style="display:flex;gap:6px;">
+          <button id="atmo-play" style="flex:1;padding:4px 8px;">${isPlaying ? "▶ Playing" : "▶ Generate & Play"}</button>
+          <button id="atmo-stop" style="flex:1;padding:4px 8px;">⏹ Stop</button>
         </div>
 
-        <div class="atmo-section">
-          <label>Volume</label>
-          <input type="range" id="atmo-volume" min="0" max="1" step="0.05" value="${game.settings.get(MODULE_ID, "masterVolume")}">
+        <div>
+          <label style="font-size:11px;font-weight:bold;">Volume</label>
+          <input type="range" id="atmo-volume" min="0" max="1" step="0.05" value="${game.settings.get(MODULE_ID, "masterVolume")}" style="width:100%;">
         </div>
 
-        <div class="atmo-section">
-          <details>
-            <summary style="cursor:pointer;font-weight:bold;font-size:12px;">⚙ Generation Settings</summary>
-            <div style="margin-top:6px;">
-              <div style="margin-bottom:6px;">
-                <label style="font-size:11px;">
-                  <input type="checkbox" id="atmo-gen-instrumental" ${game.settings.get(MODULE_ID, "instrumental") ? "checked" : ""}/> Instrumental (no vocals)
-                </label>
-              </div>
-              <div style="margin-bottom:6px;">
-                <label style="font-size:11px;">Negative Tags</label>
-                <input type="text" id="atmo-gen-negative-tags" value="${game.settings.get(MODULE_ID, "negativeTags")}" style="width:100%;font-size:11px;" placeholder="vocals, singing, voice"/>
-              </div>
-              <div style="margin-bottom:6px;">
-                <label style="font-size:11px;">Cooldown: ${cooldownSec}s | Scene refresh: ${refreshMin}min</label>
-              </div>
-            </div>
-          </details>
-        </div>
-
-        <div class="atmo-section">
-          <details>
-            <summary style="cursor:pointer;font-weight:bold;font-size:12px;">🗑 Cache Management</summary>
-            <div style="margin-top:6px;">
-              <p style="font-size:11px;margin:0 0 6px;">Remove playlist entries for deleted/missing audio files.</p>
-              <button id="atmo-purge-cache" style="width:100%;font-size:11px;">🔄 Purge Missing Tracks</button>
-              <button id="atmo-clear-all-cache" style="width:100%;font-size:11px;margin-top:4px;color:#ff6666;">🗑 Clear ALL Cached Tracks</button>
-            </div>
-          </details>
-        </div>
-
-        <div class="atmo-section atmo-status">
+        <div style="border-top:1px solid #444;padding-top:6px;font-size:11px;color:#aaa;">
           <div id="atmo-gen-status">${c.generationStatus || "Idle"}</div>
-          <div id="atmo-credits">Credits: ${c.credits ?? "—"}</div>
           <div id="atmo-track-info">${c.currentTrackInfo || ""}</div>
-          ${preloadStatus}
         </div>
       </div>
     `;
-
-    const container = document.createElement("div");
-    container.innerHTML = htmlString.trim();
-    return { main: container };
   }
 
-  /** Replace inner content of the app element. */
-  _replaceHTML(result, content, _options) {
-    const main = result.main;
-    content.replaceChildren(main);
-    this._activateListeners(content);
+  _updateContent() {
+    // Update live elements without re-rendering the whole dialog
+    const status = document.getElementById("atmo-gen-status");
+    if (status) status.textContent = this.controller.generationStatus || "Idle";
+    const track = document.getElementById("atmo-track-info");
+    if (track) track.textContent = this.controller.currentTrackInfo || "";
+    const prompt = document.getElementById("atmo-prompt-display");
+    if (prompt && document.activeElement !== prompt) prompt.value = this.controller.currentPrompt || "(none)";
   }
 
   _activateListeners(html) {
     const c = this.controller;
+    const panel = this;
 
-    html.querySelector("#atmo-enabled-toggle")?.addEventListener("click", () => {
+    html.find("#atmo-enabled-toggle").on("click", () => {
       const newVal = !game.settings.get(MODULE_ID, "enabled");
       game.settings.set(MODULE_ID, "enabled", newVal);
-      if (newVal) {
-        c.evaluateAndPlay(true);
-      } else {
-        c.stop();
-      }
-      setTimeout(() => this.render(), 100);
+      if (newVal) c.evaluateAndPlay(true);
+      else c.stop();
+      setTimeout(() => panel._show(), 200);
     });
 
-    html.querySelector("#atmo-auto-toggle")?.addEventListener("click", () => {
+    html.find("#atmo-auto-toggle").on("click", () => {
       c.autoMode = !c.autoMode;
       if (c.autoMode) { c.manualMood = null; c.evaluateAndPlay(true); }
-      this.render();
+      setTimeout(() => panel._show(), 200);
     });
 
-    html.querySelector("#atmo-mood-select")?.addEventListener("change", (e) => {
-      if (e.target.value) c.setMood(e.target.value);
+    html.find("#atmo-mood-select").on("change", function() {
+      if (this.value) c.setMood(this.value);
     });
 
-    html.querySelector("#atmo-play")?.addEventListener("click", () => {
-      const textarea = html.querySelector("#atmo-prompt-display");
-      c.triggerGeneration(textarea?.value);
+    html.find("#atmo-play").on("click", () => {
+      const textarea = html.find("#atmo-prompt-display");
+      c.triggerGeneration(textarea?.val());
     });
 
-    html.querySelector("#atmo-stop")?.addEventListener("click", () => { c.stop(); this.render(); });
+    html.find("#atmo-stop").on("click", () => {
+      c.stop();
+      setTimeout(() => panel._show(), 200);
+    });
 
-    html.querySelector("#atmo-volume")?.addEventListener("input", (e) => {
-      const v = parseFloat(e.target.value);
+    html.find("#atmo-volume").on("input", function() {
+      const v = parseFloat(this.value);
       FoundryPlaylistManager.setVolume(v);
       game.settings.set(MODULE_ID, "masterVolume", v);
     });
-
-    html.querySelector("#atmo-gen-instrumental")?.addEventListener("change", (e) => {
-      game.settings.set(MODULE_ID, "instrumental", e.target.checked);
-    });
-
-    html.querySelector("#atmo-gen-negative-tags")?.addEventListener("change", (e) => {
-      game.settings.set(MODULE_ID, "negativeTags", e.target.value);
-    });
-
-    html.querySelector("#atmo-purge-cache")?.addEventListener("click", async () => {
-      const btn = html.querySelector("#atmo-purge-cache");
-      btn.disabled = true;
-      btn.textContent = "Purging...";
-      try {
-        const removed = await PlaylistCacheManager.purgeMissing();
-        ui.notifications.info(`Atmosphera: Purged ${removed} missing track${removed !== 1 ? "s" : ""}`);
-      } catch (e) {
-        ui.notifications.error("Atmosphera: Purge failed — check console");
-        console.error(`${MODULE_ID} | Purge failed:`, e);
-      }
-      btn.disabled = false;
-      btn.textContent = "🔄 Purge Missing Tracks";
-    });
-
-    html.querySelector("#atmo-clear-all-cache")?.addEventListener("click", async () => {
-      const confirm = await Dialog.confirm({
-        title: "Clear ALL Atmosphera Tracks",
-        content: "<p>This will delete ALL Atmosphera playlists and their sounds. Generated audio files on disk will remain. Continue?</p>",
-      });
-      if (!confirm) return;
-      const btn = html.querySelector("#atmo-clear-all-cache");
-      btn.disabled = true;
-      btn.textContent = "Clearing...";
-      try {
-        const removed = await PlaylistCacheManager.clearAll();
-        ui.notifications.info(`Atmosphera: Cleared ${removed} playlist${removed !== 1 ? "s" : ""}`);
-      } catch (e) {
-        ui.notifications.error("Atmosphera: Clear failed — check console");
-        console.error(`${MODULE_ID} | Clear failed:`, e);
-      }
-      btn.disabled = false;
-      btn.textContent = "🗑 Clear ALL Cached Tracks";
-    });
   }
 
+  // Public update methods (called by controller)
   updateStatus(status) {
     const el = document.getElementById("atmo-gen-status");
     if (el) el.textContent = status;
   }
 
-  updateCredits(credits) {
-    const el = document.getElementById("atmo-credits");
-    if (el) el.textContent = `Credits: ${credits}`;
-  }
+  updateCredits(credits) { /* no-op for simplified panel */ }
 
   updatePrompt(prompt) {
     const el = document.getElementById("atmo-prompt-display");
