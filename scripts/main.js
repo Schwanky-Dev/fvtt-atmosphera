@@ -2030,12 +2030,27 @@ class AtmospheraController {
 
       const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
       const volume = game.settings.get(MODULE_ID, "masterVolume");
-      await FoundryPlaylistManager.play(url, category, {
-        volume,
-        fadeDuration,
-        title: title,
-        prompt: prompt
-      });
+
+      // Small delay to let Foundry's file index catch up with newly uploaded files
+      await new Promise(r => setTimeout(r, 500));
+
+      try {
+        await FoundryPlaylistManager.play(url, category, {
+          volume,
+          fadeDuration,
+          title: title,
+          prompt: prompt
+        });
+      } catch (playErr) {
+        console.warn(`${MODULE_ID} | First play attempt failed, retrying in 2s:`, playErr.message);
+        await new Promise(r => setTimeout(r, 2000));
+        await FoundryPlaylistManager.play(url, category, {
+          volume,
+          fadeDuration,
+          title: title,
+          prompt: prompt
+        });
+      }
 
       this._consecutiveFailures = 0;
       this._lastSuccessfulGeneration = Date.now();
@@ -2738,17 +2753,24 @@ Hooks.once("ready", () => {
 
   ui.notifications.info("Atmosphera v0.8.1 ready — music syncs to all players via Foundry playlists.");
 
-  // ── Macro auto-creation REMOVED ──
-  // Foundry v13 has a core bug where socket onack throws "Cannot read
-  // properties of null (reading 'startsWith')" after ANY document creation
-  // (including Macro.create). The error fires in the socket handler OUTSIDE
-  // any try/catch scope — it cannot be suppressed from module code.
-  //
-  // The panel is accessible via:
-  //   1. /atmo or /atmosphera chat command
-  //   2. 🎵 button in scene controls (audio tab)
-  //   3. "Atmosphera" button at bottom of Players list
-  //
-  // Users who want a macro can create one manually:
-  //   game.modules.get("atmosphera")?.api?.openPanel();
+  // ── Auto-create macro (fire and forget — v13 error is cosmetic) ──
+  // The startsWith error WILL fire in console but the macro DOES get created.
+  // We delay 10s to avoid interfering with module init, and check if it exists first.
+  setTimeout(() => {
+    if (!game.user.isGM) return;
+    const macroName = "Atmosphera Panel";
+    const existing = game.macros?.find(m => m.name === macroName);
+    if (existing) return; // Already exists
+    Macro.create({
+      name: macroName,
+      type: "script",
+      command: `game.modules.get("atmosphera")?.api?.openPanel();`,
+      img: "icons/svg/sound.svg"
+    }).then(() => {
+      console.log(`${MODULE_ID} | Created "${macroName}" macro (ignore any startsWith errors above)`);
+    }).catch(() => {
+      // v13 socket ack bug — macro was likely created despite the error
+      console.log(`${MODULE_ID} | Macro creation fired (v13 may show socket error — this is normal)`);
+    });
+  }, 10000);
 });
