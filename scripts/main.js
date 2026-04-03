@@ -414,6 +414,13 @@ function registerSettings() {
     scope: "world", config: false, type: String, default: "[]"
   });
 
+  s("combatIntensityOverride", {
+    name: "Combat Intensity Override",
+    hint: "Manual intensity override during combat. -1 = auto (derived from HP). 0-100 = manual scale.",
+    scope: "world", config: false, type: Number, default: -1,
+    range: { min: -1, max: 100, step: 1 }
+  });
+
   s("setupComplete", {
     name: "Setup Complete",
     scope: "world", config: false, type: Boolean, default: false
@@ -623,8 +630,8 @@ class GameStateCollector {
 
 class PromptBuilder {
 
-  static build(state, moodOverride = null, hpContext = null) {
-    const prefix = game.settings.get(MODULE_ID, "promptPrefix")?.trim();
+  static build(state, moodOverride = null, hpContext = null, overrides = {}) {
+    const prefix = overrides.promptPrefix ?? game.settings.get(MODULE_ID, "promptPrefix")?.trim();
     const { combat, party, scene } = state;
     let category = "ambient";
 
@@ -668,12 +675,24 @@ class PromptBuilder {
     // ── Mood section ──
     const moodParts = [];
     const hpPct = party.hpPct;
-    const hpDesc = getDescriptor(hpPct, HP_DESCRIPTORS);
-    if (hpPct < 0.25) {
-      moodParts.push("dire peril", "last stand", "desperate", "fading hope");
-      category = combat.active ? this._buildCombatCategory(combat) + "-desperate" : this._buildAmbientCategory(scene) + "-desperate";
-    } else if (hpDesc) {
-      moodParts.push(hpDesc);
+
+    // Combat intensity override: if >= 0, use manual descriptor instead of HP-derived
+    const intensityOverride = game.settings.get(MODULE_ID, "combatIntensityOverride");
+    if (combat.active && intensityOverride >= 0) {
+      let intensityDesc;
+      if (intensityOverride <= 25) intensityDesc = "calm, subdued, quiet tension";
+      else if (intensityOverride <= 50) intensityDesc = "building, moderate tension, alert";
+      else if (intensityOverride <= 75) intensityDesc = "intense, urgent, escalating danger";
+      else intensityDesc = "maximum intensity, desperate, climactic, overwhelming";
+      moodParts.push(intensityDesc);
+    } else {
+      const hpDesc = getDescriptor(hpPct, HP_DESCRIPTORS);
+      if (hpPct < 0.25) {
+        moodParts.push("dire peril", "last stand", "desperate", "fading hope");
+        category = combat.active ? this._buildCombatCategory(combat) + "-desperate" : this._buildAmbientCategory(scene) + "-desperate";
+      } else if (hpDesc) {
+        moodParts.push(hpDesc);
+      }
     }
     // Atmospheric modifiers for variety
     const modifiers = _pickRandomN(ATMOSPHERIC_MODIFIERS, 1 + Math.floor(Math.random() * 2));
@@ -1701,7 +1720,23 @@ class AtmospheraPanel {
 
         <div style="display:flex;gap:6px;">
           <button id="atmo-history" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#3a3a4a;color:#ccc;border:1px solid #555;font-weight:bold;">📜 History</button>
+          <button id="atmo-save-scene" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#4a3a2d;color:#fa8;border:1px solid #a84;font-weight:bold;">📌 Save for Scene</button>
         </div>
+
+        ${c._sceneConfigActive ? `
+        <div style="display:flex;align-items:center;gap:6px;background:#3a3020;border:1px solid #a84;border-radius:4px;padding:4px 8px;">
+          <span style="font-size:11px;color:#fa8;flex:1;">📌 Scene config active</span>
+          <button id="atmo-clear-scene" style="padding:2px 8px;border-radius:3px;cursor:pointer;background:#5a2d2d;color:#f88;border:1px solid #a44;font-size:11px;">Clear</button>
+        </div>` : ''}
+
+        ${game.combat?.active ? `
+        <div>
+          <label style="font-size:11px;font-weight:bold;">Intensity Override <span style="font-weight:normal;color:#888;">(combat only)</span></label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="range" id="atmo-intensity" min="-1" max="100" step="1" value="${game.settings.get(MODULE_ID, 'combatIntensityOverride')}" style="flex:1;">
+            <span id="atmo-intensity-label" style="font-size:11px;min-width:36px;text-align:right;">${game.settings.get(MODULE_ID, 'combatIntensityOverride') < 0 ? 'Auto' : game.settings.get(MODULE_ID, 'combatIntensityOverride')}</span>
+          </div>
+        </div>` : ''}
 
         <div>
           <label style="font-size:11px;font-weight:bold;">Volume</label>
@@ -1814,6 +1849,27 @@ class AtmospheraPanel {
 
     html.find("#atmo-history").on("click", () => {
       AtmospheraHistoryDialog.show(c);
+    });
+
+    html.find("#atmo-save-scene").on("click", () => {
+      c.saveSceneConfig();
+    });
+
+    html.find("#atmo-clear-scene").on("click", () => {
+      c.clearSceneConfig();
+    });
+
+    html.find("#atmo-intensity").on("input", function() {
+      const val = parseInt(this.value);
+      const label = document.getElementById("atmo-intensity-label");
+      if (label) label.textContent = val < 0 ? "Auto" : String(val);
+    });
+
+    html.find("#atmo-intensity").on("change", function() {
+      const val = parseInt(this.value);
+      game.settings.set(MODULE_ID, "combatIntensityOverride", val);
+      console.log(`${MODULE_ID} | Combat intensity override: ${val < 0 ? 'auto' : val}`);
+      if (c.autoMode) c.evaluateAndPlay(true);
     });
   }
 
@@ -1939,6 +1995,9 @@ class AtmospheraController {
     // Dedup detection
     this._dedup = new PromptDeduplicator(5);
 
+    // Scene-specific config
+    this._sceneConfigActive = false;
+
     // Crossfade profile override (consumed once per play call)
     this._crossfadeProfile = null;
 
@@ -2045,6 +2104,58 @@ class AtmospheraController {
     } else {
       this._resetSceneRefreshTimer();
     }
+
+    // Load scene-specific config if it exists
+    this._loadSceneConfig(sceneId);
+  }
+
+  /** Load scene-specific prompt config from Foundry flags */
+  _loadSceneConfig(sceneId) {
+    const scene = game.scenes?.get(sceneId);
+    const config = scene?.getFlag(MODULE_ID, "config");
+    if (config) {
+      console.log(`${MODULE_ID} | Loading scene config for "${scene.name}": ${JSON.stringify(config)}`);
+      this._sceneConfigActive = true;
+      // Temporarily apply scene-specific settings
+      if (config.mood) this.manualMood = config.mood;
+      if (config.genrePreset) game.settings.set(MODULE_ID, "activeGenrePreset", config.genrePreset);
+      // promptPrefix is applied via overrides in evaluateAndPlay, stored on controller
+      this._scenePromptPrefix = config.promptPrefix ?? null;
+    } else {
+      this._sceneConfigActive = false;
+      this._scenePromptPrefix = null;
+    }
+    if (this.panel) this.panel.render();
+  }
+
+  /** Save current panel state as scene-specific config */
+  async saveSceneConfig() {
+    const scene = game.scenes?.active;
+    if (!scene) { ui.notifications.warn("Atmosphera: No active scene."); return; }
+    const config = {
+      promptPrefix: game.settings.get(MODULE_ID, "promptPrefix") || "",
+      mood: this.manualMood || null,
+      genrePreset: game.settings.get(MODULE_ID, "activeGenrePreset") || "none"
+    };
+    await scene.setFlag(MODULE_ID, "config", config);
+    this._sceneConfigActive = true;
+    console.log(`${MODULE_ID} | Saved scene config for "${scene.name}": ${JSON.stringify(config)}`);
+    ui.notifications.info(`Atmosphera: Config saved for scene "${scene.name}"`);
+    if (this.panel) this.panel.render();
+  }
+
+  /** Clear scene-specific config and revert to global settings */
+  async clearSceneConfig() {
+    const scene = game.scenes?.active;
+    if (!scene) return;
+    await scene.unsetFlag(MODULE_ID, "config");
+    this._sceneConfigActive = false;
+    this._scenePromptPrefix = null;
+    console.log(`${MODULE_ID} | Cleared scene config for "${scene.name}"`);
+    ui.notifications.info(`Atmosphera: Scene config cleared for "${scene.name}"`);
+    if (this.panel) this.panel.render();
+    // Re-evaluate with global settings
+    this.evaluateAndPlay(true);
   }
 
   /** Play a cached track directly without triggering generation. */
@@ -2133,7 +2244,9 @@ class AtmospheraController {
 
     // Build HP context for tracking significant drops
     const hpContext = { previousHpPct: this._lastHpPct, forceRegeneration: false };
-    const { prompt, category, title } = PromptBuilder.build(state, this.manualMood, hpContext);
+    const overrides = {};
+    if (this._scenePromptPrefix != null) overrides.promptPrefix = this._scenePromptPrefix;
+    const { prompt, category, title } = PromptBuilder.build(state, this.manualMood, hpContext, overrides);
 
     // Update tracked HP percentage
     this._lastHpPct = state.party.hpPct;
@@ -2928,6 +3041,9 @@ Hooks.once("ready", () => {
     if (!game.settings.get(MODULE_ID, "enabled")) return;
     if (!controller.autoMode) return;
     console.log(`${MODULE_ID} | Combat ended`);
+
+    // Reset intensity override to auto
+    game.settings.set(MODULE_ID, "combatIntensityOverride", -1);
 
     controller._lastCombatSignature = "";
     controller._dedup.clear();
