@@ -70,6 +70,94 @@ const MOOD_PRESETS = {
   epic: "grand, sweeping, orchestral, cinematic, powerful"
 };
 
+/* ──────────────────────────── GENRE PRESETS ──────────────────────────── */
+
+const GENRE_PRESETS = {
+  // ── Dungeon ──
+  "dark-dungeon": { id: "dark-dungeon", name: "Dark Dungeon Crawl", category: "dungeon", promptTags: "dark underground dungeon drones dripping stone cold tension echoing corridors", mood: "tension" },
+  "ancient-ruins": { id: "ancient-ruins", name: "Ancient Ruins", category: "dungeon", promptTags: "crumbling stone ancient ruins forgotten civilization dust wind ambient decay", mood: "mystery" },
+  "trapped-labyrinth": { id: "trapped-labyrinth", name: "Trapped Labyrinth", category: "dungeon", promptTags: "maze claustrophobic mechanical clicks traps danger winding passages tense", mood: "tension" },
+  "underdark-descent": { id: "underdark-descent", name: "Underdark Descent", category: "dungeon", promptTags: "deep underground alien bioluminescence oppressive vast cavern otherworldly drones" },
+  "crypt-of-the-damned": { id: "crypt-of-the-damned", name: "Crypt of the Damned", category: "dungeon", promptTags: "crypt tomb haunting cold stone coffins undead presence spectral whispers minor key", mood: "horror" },
+  "sewer-depths": { id: "sewer-depths", name: "Sewer Depths", category: "dungeon", promptTags: "dripping water echoing tunnels filth murky damp underground industrial dark ambient" },
+  "dragon-lair": { id: "dragon-lair", name: "Dragon's Lair", category: "dungeon", promptTags: "vast cavern treasure hoard draconic heat volcanic rumble gold glittering ominous grandeur", mood: "epic" },
+
+  // ── Tavern ──
+  "tavern-revelry": { id: "tavern-revelry", name: "Tavern Revelry", category: "tavern", promptTags: "medieval tavern fiddle lute ale warm folk rowdy jig dancing laughter", mood: "calm" },
+  "quiet-inn": { id: "quiet-inn", name: "Quiet Inn", category: "tavern", promptTags: "cozy inn fireplace crackling warm gentle acoustic soft conversation peaceful rest", mood: "calm" },
+  "shady-tavern": { id: "shady-tavern", name: "Shady Tavern", category: "tavern", promptTags: "dimly lit tavern hushed whispers scheming rogues smoky atmosphere low strings intrigue", mood: "mystery" },
+  "bardic-performance": { id: "bardic-performance", name: "Bardic Performance", category: "tavern", promptTags: "bard lute harp singing ballad medieval performance storytelling melodic folk", mood: "wonder" },
+  "dockside-pub": { id: "dockside-pub", name: "Dockside Pub", category: "tavern", promptTags: "seaside pub sailors accordion shanty rough worn wood salt air boisterous", mood: "calm" },
+  "gambling-den": { id: "gambling-den", name: "Gambling Den", category: "tavern", promptTags: "smoky den dice cards tension coins clinking low jazzy undercurrent risk reward" },
+  "elven-wine-hall": { id: "elven-wine-hall", name: "Elven Wine Hall", category: "tavern", promptTags: "elegant elven harp crystal ethereal refined wine flowing gentle magical ambiance", mood: "calm" },
+
+  // ── Wilderness ──
+  "enchanted-forest": { id: "enchanted-forest", name: "Enchanted Forest", category: "wilderness", promptTags: "mystical forest enchanted woodland fairy lights sparkling whimsical celtic harp nature", mood: "wonder" },
+  "dark-woods": { id: "dark-woods", name: "Dark Woods", category: "wilderness", promptTags: "dark forest twisted trees fog wolves howling ominous creaking branches primal danger", mood: "horror" },
+  "mountain-pass": { id: "mountain-pass", name: "Mountain Pass", category: "wilderness", promptTags: "mountain wind altitude epic vista rocky terrain cold exposure vast panoramic horns", mood: "epic" },
+  "arctic-wasteland": { id: "arctic-wasteland", name: "Arctic Wasteland", category: "wilderness", promptTags: "frozen tundra icy wind desolate blizzard frost crystalline cold isolation sparse" },
+  "desert-crossing": { id: "desert-crossing", name: "Desert Crossing", category: "wilderness", promptTags: "arid desert scorching sun sand dunes heat shimmer desolate wind vast emptiness" },
+  "swamp-bog": { id: "swamp-bog", name: "Swamp Bog", category: "wilderness", promptTags: "murky swamp humid buzzing insects fog decay bubbling stagnant water oppressive", mood: "tension" },
+  "open-plains": { id: "open-plains", name: "Open Plains", category: "wilderness", promptTags: "rolling grasslands wind open sky pastoral vast horizon gentle warm breeze travel" },
+  "jungle-expedition": { id: "jungle-expedition", name: "Jungle Expedition", category: "wilderness", promptTags: "dense tropical jungle humid exotic birds canopy vines percussion tribal discovery" },
+  "volcanic-wastes": { id: "volcanic-wastes", name: "Volcanic Wastes", category: "wilderness", promptTags: "volcanic rumbling heat lava molten rock ash smoke danger primordial fire earth" },
+
+  // ── Combat ──
+  "epic-boss": { id: "epic-boss", name: "Epic Boss Battle", category: "combat", promptTags: "orchestral epic choir brass climactic boss battle cinematic powerful crescendo", mood: "epic" },
+  "skirmish": { id: "skirmish", name: "Quick Skirmish", category: "combat", promptTags: "fast-paced light combat percussion agile swords clashing quick tempo action" },
+  "siege-warfare": { id: "siege-warfare", name: "Siege Warfare", category: "combat", promptTags: "war drums siege massive army catapults crashing walls thundering hooves epic scale destruction", mood: "epic" },
+  "ambush": { id: "ambush", name: "Ambush", category: "combat", promptTags: "sudden attack surprise ambush quick burst adrenaline panic scramble urgent staccato", mood: "chase" },
+  "last-stand": { id: "last-stand", name: "Last Stand", category: "combat", promptTags: "heroic last stand desperate defiant final charge emotional sacrifice strings swelling", mood: "epic" },
+  "undead-horde": { id: "undead-horde", name: "Undead Horde", category: "combat", promptTags: "undead swarm relentless shambling dark necromantic choir haunting minor key urgent" },
+  "aerial-battle": { id: "aerial-battle", name: "Aerial Battle", category: "combat", promptTags: "soaring aerial combat wind rushing wings flying vertigo dynamic brass sweeping" },
+
+  // ── Mystery ──
+  "crime-investigation": { id: "crime-investigation", name: "Crime Investigation", category: "mystery", promptTags: "noir investigation clues detective subtle piano suspicion dark alleys intrigue deduction", mood: "mystery" },
+  "haunted-manor": { id: "haunted-manor", name: "Haunted Manor", category: "mystery", promptTags: "creaking floorboards dusty haunted mansion cobwebs ghosts whispers unsettling music box", mood: "horror" },
+  "political-intrigue": { id: "political-intrigue", name: "Political Intrigue", category: "mystery", promptTags: "courtly intrigue scheming nobles chess politics subtle strings tension diplomacy secrets", mood: "mystery" },
+  "forbidden-knowledge": { id: "forbidden-knowledge", name: "Forbidden Knowledge", category: "mystery", promptTags: "arcane library forbidden tomes eldritch knowledge whispers madness eerie ambient dissonant", mood: "horror" },
+  "heist-planning": { id: "heist-planning", name: "Heist Planning", category: "mystery", promptTags: "heist planning clever schemes blueprints ticking clock anticipation jazzy tension build", mood: "stealth" },
+  "conspiracy": { id: "conspiracy", name: "Conspiracy Unraveled", category: "mystery", promptTags: "conspiracy shadows paranoia truth hidden layers unraveling deep mystery tension building" },
+
+  // ── Sacred ──
+  "holy-temple": { id: "holy-temple", name: "Holy Temple", category: "sacred", promptTags: "sacred temple reverb choir solemn holy organ prayer divine radiant light", mood: "wonder" },
+  "dark-ritual": { id: "dark-ritual", name: "Dark Ritual", category: "sacred", promptTags: "dark ritual chanting cultists occult summoning candles blood sacrifice ominous low drones", mood: "horror" },
+  "celestial-plane": { id: "celestial-plane", name: "Celestial Plane", category: "sacred", promptTags: "celestial heavenly ethereal angelic radiant golden clouds divine transcendent choir bells" },
+  "druidic-grove": { id: "druidic-grove", name: "Druidic Grove", category: "sacred", promptTags: "ancient druidic grove stone circle nature magic primal deep forest spiritual Celtic", mood: "wonder" },
+  "infernal-domain": { id: "infernal-domain", name: "Infernal Domain", category: "sacred", promptTags: "hellscape infernal fire brimstone demonic chains screams sulfur oppressive heavy dark choir", mood: "horror" },
+  "ancestral-spirits": { id: "ancestral-spirits", name: "Ancestral Spirits", category: "sacred", promptTags: "ancestral spirits shamanic drums ghostly voices ancient wisdom ethereal tribal reverent" },
+  "feywild-sanctuary": { id: "feywild-sanctuary", name: "Feywild Sanctuary", category: "sacred", promptTags: "feywild enchanted sparkling whimsical magical dreamy bells harp playful ethereal beauty" },
+
+  // ── Urban ──
+  "bustling-market": { id: "bustling-market", name: "Bustling Market", category: "urban", promptTags: "busy marketplace merchants shouting exotic wares lively cosmopolitan percussion multicultural" },
+  "royal-court": { id: "royal-court", name: "Royal Court", category: "urban", promptTags: "regal grand court nobility trumpet fanfare elegant ceremony formal harpsichord stately", mood: "wonder" },
+  "thieves-guild": { id: "thieves-guild", name: "Thieves' Guild", category: "urban", promptTags: "underground criminal hideout shadows daggers whispered deals sneaky low tempo dark", mood: "stealth" },
+  "festival-celebration": { id: "festival-celebration", name: "Festival Celebration", category: "urban", promptTags: "festival celebration fireworks crowds cheering parade drums horns colorful joyous dance", mood: "triumph" },
+  "slums-underbelly": { id: "slums-underbelly", name: "City Slums", category: "urban", promptTags: "gritty streets poverty desperation dark alleyways danger grime industrial low brooding" },
+  "wizard-tower": { id: "wizard-tower", name: "Wizard's Tower", category: "urban", promptTags: "arcane tower magical laboratory bubbling potions glowing runes mystical ambient crystalline", mood: "mystery" },
+  "cathedral-district": { id: "cathedral-district", name: "Cathedral District", category: "urban", promptTags: "grand cathedral bells ringing stone streets reverent organ distant choir holy district" },
+
+  // ── Nautical ──
+  "open-sea": { id: "open-sea", name: "Open Sea Voyage", category: "nautical", promptTags: "ocean waves vast horizon rolling sea salt wind creaking ship sails flapping voyage", mood: "wonder" },
+  "pirate-attack": { id: "pirate-attack", name: "Pirate Attack", category: "nautical", promptTags: "pirate battle cannons boarding party cutlass swashbuckling sea combat fast urgent", mood: "chase" },
+  "storm-at-sea": { id: "storm-at-sea", name: "Storm at Sea", category: "nautical", promptTags: "raging storm lightning thunder massive waves perilous ship tossing dark clouds desperate" },
+  "underwater-depths": { id: "underwater-depths", name: "Underwater Depths", category: "nautical", promptTags: "subaquatic deep ocean muffled pressure bioluminescent creatures dark abyss mysterious ambient" },
+  "port-town": { id: "port-town", name: "Port Town", category: "nautical", promptTags: "harbor port town seagulls rigging ropes merchants sailors bustle docks salt breeze" },
+  "ghost-ship": { id: "ghost-ship", name: "Ghost Ship", category: "nautical", promptTags: "ghostly ship fog spectral crew abandoned vessel creaking phantom sails haunting eerie ocean", mood: "horror" },
+  "kraken-encounter": { id: "kraken-encounter", name: "Kraken Encounter", category: "nautical", promptTags: "massive sea creature kraken tentacles deep ocean terror leviathan epic brass percussion", mood: "epic" }
+};
+
+const GENRE_PRESET_CATEGORIES = [
+  { key: "dungeon", label: "Dungeon" },
+  { key: "tavern", label: "Tavern" },
+  { key: "wilderness", label: "Wilderness" },
+  { key: "combat", label: "Combat" },
+  { key: "mystery", label: "Mystery" },
+  { key: "sacred", label: "Sacred" },
+  { key: "urban", label: "Urban" },
+  { key: "nautical", label: "Nautical" }
+];
+
 /* ──────────────────────────── ATMOSPHERIC MODIFIERS (for prompt variety) ──── */
 
 const ATMOSPHERIC_MODIFIERS = [
@@ -302,6 +390,12 @@ function registerSettings() {
     range: { min: 5, max: 60, step: 1 }
   });
 
+  s("activeGenrePreset", {
+    name: "Genre Preset",
+    hint: "Active genre preset — prepends curated style tags to every generation.",
+    scope: "world", config: false, type: String, default: "none"
+  });
+
   s("setupComplete", {
     name: "Setup Complete",
     scope: "world", config: false, type: Boolean, default: false
@@ -516,8 +610,18 @@ class PromptBuilder {
     const { combat, party, scene } = state;
     let category = "ambient";
 
+    // ── Genre preset injection ──
+    const activePresetId = game.settings.get(MODULE_ID, "activeGenrePreset");
+    const activePreset = activePresetId && activePresetId !== "none" ? GENRE_PRESETS[activePresetId] : null;
+
+    // If preset has a mood and no manual mood override, use preset's mood
+    if (activePreset?.mood && !moodOverride) {
+      moodOverride = activePreset.mood;
+    }
+
     // ── Style section ──
     const styleParts = ["instrumental"];
+    if (activePreset) styleParts.push(activePreset.promptTags);
     if (prefix) styleParts.push(prefix);
     if (combat.active) {
       if (combat.hasBoss) styleParts.push("orchestral", "cinematic", "choir");
@@ -1541,6 +1645,19 @@ class AtmospheraPanel {
         </div>
 
         <div>
+          <label style="font-size:11px;font-weight:bold;">Genre Preset</label>
+          <select id="atmo-genre-preset" style="width:100%;margin-top:2px;">
+            <option value="none">— None (auto-detect) —</option>
+            ${GENRE_PRESET_CATEGORIES.map(cat => {
+              const presets = Object.values(GENRE_PRESETS).filter(p => p.category === cat.key);
+              return `<optgroup label="${cat.label}">${presets.map(p =>
+                `<option value="${p.id}" ${game.settings.get(MODULE_ID, "activeGenrePreset") === p.id ? "selected" : ""}>${p.name}</option>`
+              ).join("")}</optgroup>`;
+            }).join("")}
+          </select>
+        </div>
+
+        <div>
           <label style="font-size:11px;font-weight:bold;">Seed Prompt <span style="font-weight:normal;color:#888;">(style for all generations)</span></label>
           <input type="text" id="atmo-seed-prompt" value="${seedPrompt.replace(/"/g, '&quot;')}" placeholder='e.g. "orchestral cinematic", "dark ambient electronic"' style="width:100%;font-size:11px;margin-top:2px;">
         </div>
@@ -1629,6 +1746,12 @@ class AtmospheraPanel {
         c.evaluateAndPlay(true);
       }
       panel._updateContent();
+    });
+
+    html.find("#atmo-genre-preset").on("change", function() {
+      game.settings.set(MODULE_ID, "activeGenrePreset", this.value);
+      console.log(`${MODULE_ID} | Genre preset changed: ${this.value}`);
+      if (c.autoMode) c.evaluateAndPlay(true);
     });
 
     html.find("#atmo-seed-prompt").on("change", function() {
@@ -2443,7 +2566,7 @@ Hooks.once("ready", () => {
       getCredits: () => UdioClient.getCredits(),
       purgeCache: () => PlaylistCacheManager.purgeMissing(),
       clearCache: () => PlaylistCacheManager.clearAll(),
-      CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS
+      CREATURE_HINTS, SCENE_KEYWORD_HINTS, MOOD_PRESETS, GENRE_PRESETS
     };
   }
 
