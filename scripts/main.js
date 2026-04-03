@@ -158,6 +158,18 @@ const GENRE_PRESET_CATEGORIES = [
   { key: "nautical", label: "Nautical" }
 ];
 
+/* ──────────────────────────── CROSSFADE PROFILES ──────────────────────────── */
+
+const CROSSFADE_PROFILES = {
+  "default":            3000,
+  "combat-entry":       800,
+  "scene-change":       4000,
+  "combat-end-victory": 2000,
+  "combat-end-defeat":  5000,
+  "dramatic-shift":     1500,
+  "gentle-fade":        6000
+};
+
 /* ──────────────────────────── ATMOSPHERIC MODIFIERS (for prompt variety) ──── */
 
 const ATMOSPHERIC_MODIFIERS = [
@@ -394,6 +406,12 @@ function registerSettings() {
     name: "Genre Preset",
     hint: "Active genre preset — prepends curated style tags to every generation.",
     scope: "world", config: false, type: String, default: "none"
+  });
+
+  s("promptHistory", {
+    name: "Prompt History",
+    hint: "JSON array of recent prompts (managed internally).",
+    scope: "world", config: false, type: String, default: "[]"
   });
 
   s("setupComplete", {
@@ -1049,10 +1067,19 @@ class FoundryPlaylistManager {
   static async play(filePath, category, options = {}) {
     const {
       volume = game.settings.get(MODULE_ID, "masterVolume"),
-      fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration"),
+      fadeDuration = null,
+      profileName = null,
       title = null,
       prompt = ""
     } = options;
+
+    // Resolve crossfade duration: explicit fadeDuration > profile > global setting
+    const resolvedFade = fadeDuration != null
+      ? fadeDuration
+      : (profileName && CROSSFADE_PROFILES[profileName] != null)
+        ? CROSSFADE_PROFILES[profileName]
+        : game.settings.get(MODULE_ID, "crossfadeDuration");
+    const effectiveFade = resolvedFade;
 
     // Capture currently playing sounds BEFORE starting the new one
     const previouslyPlaying = [];
@@ -1076,13 +1103,13 @@ class FoundryPlaylistManager {
         path: filePath,
         volume: volume,
         repeat: true,
-        fade: fadeDuration,
+        fade: effectiveFade,
         description: prompt || `Generated for: ${category}`,
         flags: { [MODULE_ID]: { prompt: prompt || "", category, generatedAt: Date.now() } }
       }]);
       sound = created[0];
     } else {
-      await sound.update({ volume: volume, fade: fadeDuration });
+      await sound.update({ volume: volume, fade: effectiveFade });
     }
 
     // If the new track is the same as what's already playing, don't restart it
@@ -1093,14 +1120,14 @@ class FoundryPlaylistManager {
     }
 
     // Start the NEW track first (fades in)
-    await playlist.playSound(sound, { fade: fadeDuration });
+    await playlist.playSound(sound, { fade: effectiveFade });
 
     // THEN fade out old tracks (true crossfade — no silence gap)
     for (const prev of previouslyPlaying) {
       // Don't stop the track we just started
       if (prev.sound.id === sound.id && prev.playlist.id === playlist.id) continue;
       try {
-        await prev.playlist.stopSound(prev.sound, { fade: fadeDuration });
+        await prev.playlist.stopSound(prev.sound, { fade: effectiveFade });
       } catch (e) {
         console.warn(`${MODULE_ID} | Error stopping previous sound:`, e);
       }
@@ -1672,6 +1699,10 @@ class AtmospheraPanel {
           <button id="atmo-stop" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#5a2d2d;color:#f88;border:1px solid #a44;font-weight:bold;">⏹ Stop</button>
         </div>
 
+        <div style="display:flex;gap:6px;">
+          <button id="atmo-history" style="flex:1;padding:6px 8px;border-radius:4px;cursor:pointer;background:#3a3a4a;color:#ccc;border:1px solid #555;font-weight:bold;">📜 History</button>
+        </div>
+
         <div>
           <label style="font-size:11px;font-weight:bold;">Volume</label>
           <input type="range" id="atmo-volume" min="0" max="1" step="0.05" value="${game.settings.get(MODULE_ID, "masterVolume")}" style="width:100%;">
@@ -1780,6 +1811,10 @@ class AtmospheraPanel {
       FoundryPlaylistManager.setVolume(v);
       game.settings.set(MODULE_ID, "masterVolume", v);
     });
+
+    html.find("#atmo-history").on("click", () => {
+      AtmospheraHistoryDialog.show(c);
+    });
   }
 
   // Public update methods (called by controller)
@@ -1798,6 +1833,67 @@ class AtmospheraPanel {
   updateTrackInfo(info) {
     const el = document.getElementById("atmo-track-info");
     if (el) el.textContent = info;
+  }
+}
+
+/* ──────────────────────────── PROMPT HISTORY DIALOG ──────────────────────── */
+
+class AtmospheraHistoryDialog {
+  static show(controller) {
+    let history = [];
+    try { history = JSON.parse(game.settings.get(MODULE_ID, "promptHistory") || "[]"); } catch { history = []; }
+
+    // Sort: favorites pinned to top, then by timestamp descending
+    history.sort((a, b) => {
+      if (a.isFavorite && !b.isFavorite) return -1;
+      if (!a.isFavorite && b.isFavorite) return 1;
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+
+    const rows = history.map((entry, idx) => {
+      const date = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "Unknown";
+      const star = entry.isFavorite ? "★" : "☆";
+      const cat = entry.category || "—";
+      const title = (entry.title || "").replace(/</g, "&lt;");
+      const prompt = (entry.prompt || "").replace(/</g, "&lt;").slice(0, 120);
+      return `<tr data-idx="${idx}">
+        <td style="text-align:center;cursor:pointer;font-size:16px;" class="atmo-hist-star" title="Toggle favorite">${star}</td>
+        <td style="font-size:11px;white-space:nowrap;">${date}</td>
+        <td style="font-size:11px;">${cat}</td>
+        <td style="font-size:11px;"><strong>${title}</strong><br><span style="color:#999;">${prompt}${entry.prompt && entry.prompt.length > 120 ? "…" : ""}</span></td>
+        <td style="text-align:center;"><button class="atmo-hist-replay" style="cursor:pointer;padding:2px 8px;border-radius:3px;background:#2d5a2d;color:#8f8;border:1px solid #4a4;font-size:11px;">▶</button></td>
+      </tr>`;
+    }).join("");
+
+    const content = history.length === 0
+      ? `<p style="text-align:center;color:#888;">No prompt history yet. Generate some music first!</p>`
+      : `<div style="max-height:400px;overflow-y:auto;"><table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="border-bottom:1px solid #555;font-size:11px;">
+            <th style="width:30px;">⭐</th><th>Date</th><th>Category</th><th>Prompt</th><th style="width:40px;">Play</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+
+    new Dialog({
+      title: "📜 Prompt History",
+      content,
+      buttons: { close: { label: "Close" } },
+      render: (html) => {
+        html.find(".atmo-hist-star").on("click", async function () {
+          const idx = parseInt(this.closest("tr").dataset.idx);
+          if (isNaN(idx) || !history[idx]) return;
+          history[idx].isFavorite = !history[idx].isFavorite;
+          await game.settings.set(MODULE_ID, "promptHistory", JSON.stringify(history));
+          // Re-open to refresh
+          AtmospheraHistoryDialog.show(controller);
+        });
+        html.find(".atmo-hist-replay").on("click", function () {
+          const idx = parseInt(this.closest("tr").dataset.idx);
+          if (isNaN(idx) || !history[idx]) return;
+          controller.triggerGeneration(history[idx].prompt);
+        });
+      }
+    }, { width: 600, classes: ["atmosphera-history-dialog"] }).render(true);
   }
 }
 
@@ -1842,6 +1938,9 @@ class AtmospheraController {
 
     // Dedup detection
     this._dedup = new PromptDeduplicator(5);
+
+    // Crossfade profile override (consumed once per play call)
+    this._crossfadeProfile = null;
 
     // HP tracking for tone shifts
     this._lastHpPct = 1.0;
@@ -1968,8 +2067,11 @@ class AtmospheraController {
     this._lastCategory = category;
     if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
 
+    const profileName = this._crossfadeProfile || null;
+    this._crossfadeProfile = null;
+
     try {
-      await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration });
+      await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, profileName });
       this._lastPlayTime = Date.now();
       if (this.panel) this.panel.render();
     } catch (e) {
@@ -2109,7 +2211,9 @@ class AtmospheraController {
         if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
         const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
         const volume = game.settings.get(MODULE_ID, "masterVolume");
-        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, title, prompt });
+        const profileName = this._crossfadeProfile || null;
+        this._crossfadeProfile = null;
+        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, profileName, title, prompt });
         this._lastPlayTime = Date.now();
         if (this.panel) this.panel.render();
         return;
@@ -2141,7 +2245,9 @@ class AtmospheraController {
         if (this.panel) this.panel.updateTrackInfo(this.currentTrackInfo);
         const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
         const volume = game.settings.get(MODULE_ID, "masterVolume");
-        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, title, prompt });
+        const profileName = this._crossfadeProfile || null;
+        this._crossfadeProfile = null;
+        await FoundryPlaylistManager.play(cached.url, category, { volume, fadeDuration, profileName, title, prompt });
         if (this.panel) this.panel.render();
         return;
       }
@@ -2160,6 +2266,8 @@ class AtmospheraController {
 
       const fadeDuration = game.settings.get(MODULE_ID, "crossfadeDuration");
       const volume = game.settings.get(MODULE_ID, "masterVolume");
+      const profileName = this._crossfadeProfile || null;
+      this._crossfadeProfile = null;
 
       // Small delay to let Foundry's file index catch up with newly uploaded files
       await new Promise(r => setTimeout(r, 500));
@@ -2168,6 +2276,7 @@ class AtmospheraController {
         await FoundryPlaylistManager.play(url, category, {
           volume,
           fadeDuration,
+          profileName,
           title: title,
           prompt: prompt
         });
@@ -2177,6 +2286,7 @@ class AtmospheraController {
         await FoundryPlaylistManager.play(url, category, {
           volume,
           fadeDuration,
+          profileName,
           title: title,
           prompt: prompt
         });
@@ -2186,6 +2296,7 @@ class AtmospheraController {
       this._lastSuccessfulGeneration = Date.now();
       this._lastPlayTime = Date.now();
       this._dedup.record(prompt);
+      this._recordPromptHistory(prompt, category, title);
 
       if (this.panel) this.panel.render();
     } catch (err) {
@@ -2345,6 +2456,31 @@ class AtmospheraController {
       autoMode: this.autoMode,
       prompt: this.currentPrompt
     };
+  }
+
+  _recordPromptHistory(prompt, category, title) {
+    try {
+      let history = JSON.parse(game.settings.get(MODULE_ID, "promptHistory") || "[]");
+      if (!Array.isArray(history)) history = [];
+      history.push({
+        prompt,
+        category: category || "",
+        title: title || "",
+        timestamp: Date.now(),
+        isFavorite: false
+      });
+      // Trim to 50 entries (keep favorites, trim oldest non-favorites first)
+      if (history.length > 50) {
+        const favorites = history.filter(e => e.isFavorite);
+        const nonFavorites = history.filter(e => !e.isFavorite);
+        // Keep all favorites + most recent non-favorites up to 50 total
+        const keepNonFav = Math.max(0, 50 - favorites.length);
+        history = [...favorites, ...nonFavorites.slice(-keepNonFav)].slice(-50);
+      }
+      game.settings.set(MODULE_ID, "promptHistory", JSON.stringify(history));
+    } catch (e) {
+      console.warn(`${MODULE_ID} | Failed to record prompt history:`, e);
+    }
   }
 
   _setStatus(status) {
@@ -2733,6 +2869,7 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Active scene changed — evaluating ambient`);
     controller._dedup.clear();
     controller._lastCategory = null;
+    controller._crossfadeProfile = "scene-change";
     controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
@@ -2763,6 +2900,7 @@ Hooks.once("ready", () => {
 
     controller._lastCombatSignature = GameStateCollector.combatSignature(null, null);
     controller._dedup.clear();
+    controller._crossfadeProfile = "combat-entry";
     controller.evaluateAndPlay(true, { bypassCooldown: true });
   });
 
@@ -2794,6 +2932,8 @@ Hooks.once("ready", () => {
     controller._lastCombatSignature = "";
     controller._dedup.clear();
     const party = GameStateCollector._collectParty();
+    const isVictory = !party.allDown && party.count > 0;
+    controller._crossfadeProfile = isVictory ? "combat-end-victory" : "combat-end-defeat";
     controller.playSting(party.allDown ? "defeat" : "victory");
   });
 
